@@ -67,22 +67,6 @@ def get_rng_noise(
     id = base_seed + (num_pop_pairs * num_layers * step) + (pop_pair_idx * num_layers) + layer_idx
     torch_rng = torch.Generator(device=devices[0]).manual_seed(id)
 
-    # noise_a = torch.normal(
-    #     mean=0.0,
-    #     std=1.0,
-    #     size=shapes[0],
-    #     device=devices[0],
-    #     generator=torch_rng,
-    # )
-
-    # noise_b = torch.empty(shapes[1], device=devices[1])
-    # torch.nn.init.kaiming_normal_(
-    #     noise_b, 
-    #     a=0,                # Negative slope of Leaky ReLU (use 0 for standard ReLU)
-    #     mode='fan_in',      # Preserves variance in forward pass (default)
-    #     nonlinearity='leaky_relu' # Use 'relu' for standard ReLU
-    # )
-
     noise_a, noise_b = (torch.normal(
                     mean=0.0,
                     std=1.0,
@@ -170,6 +154,7 @@ def main(args: Args):
         params_dict[name] = param
         if name.endswith(".base_layer.weight"):
             base_names.append(name.split(".base_layer.weight")[0])
+        if ".lora_" in name:
             grads_dict[name] = torch.zeros_like(param)
             param.requires_grad = True
         else:
@@ -260,7 +245,7 @@ def main(args: Args):
                 master_state_dict = copy.deepcopy(peft_model.state_dict())
             
                 for pop_idx in range(args.population_size):
-                    # peft_model.load_state_dict(master_state_dict)
+                    peft_model.load_state_dict(master_state_dict)
                     # Create unique LoRA name and path for this adapter at this step
                     for layer_idx, base_name in enumerate(base_names):
                         lora_a_name = f"{base_name}.lora_A.default.weight"
@@ -277,12 +262,13 @@ def main(args: Args):
                             shapes=[lora_a.shape, lora_b.shape],
                             devices=[lora_a.device, lora_b.device],
                         )
-                        noise_b *= args.sigma
-                        lora_a.set_(noise_a)
+                        noise_b *= math.sqrt(args.sigma)
+                        noise_a *= math.sqrt(args.sigma)
+                        lora_a.add_(noise_a)
                         if pop_idx % 2 == 1:
-                            lora_b.set_(-noise_b)
+                            lora_b.add_(-noise_b)
                         else:
-                            lora_b.set_(noise_b)
+                            lora_b.add_(noise_b)
 
                     adapter_path = adapter_paths[pop_idx]
                     peft_model.save_pretrained(adapter_path)
@@ -381,11 +367,12 @@ def main(args: Args):
                         shapes=[lora_a.shape, lora_b.shape],
                         devices=[lora_a.device, lora_b.device],
                     )
-                    noise_b *= args.sigma
-                    noise = torch.matmul(noise_b, noise_a)
+                    noise_b *= math.sqrt(args.sigma)
+                    noise_a *= math.sqrt(args.sigma)
                     fitness1 = normalized_fitnesses[pop_idx]
                     fitness2 = normalized_fitnesses[pop_idx+1]
-                    grads_dict[full_base_name].add_(noise.to(grads_dict[full_base_name].device) * (fitness1 - fitness2))
+                    grads_dict[lora_a_name].add_(noise_a.to(grads_dict[lora_a_name].device) * (fitness1 + fitness2))
+                    grads_dict[lora_b_name].add_(-noise_b.to(grads_dict[lora_b_name].device) * (fitness1 - fitness2))
 
         # 4.4. Apply the gradient to the master model via the optimizer
         # The ES gradient estimate is: (1 / (N * sigma)) * sum(F_i * E_i)

@@ -14,7 +14,6 @@ import numpy as np
 from safetensors.torch import save_file
 import copy
 import wandb
-import math
 
 @dataclass
 class Args:
@@ -48,50 +47,17 @@ class Args:
     name_prefix: str = f"A"
 
 
-def get_rng_noise(
-        base_seed: int,
-        num_pop_pairs: int,
-        pop_pair_idx: int,
-        num_layers: int,
-        layer_idx: int,
-        step: int,
-        shapes: list,
-        devices: list,
-        ) -> dict[torch.device, torch.Generator]:
+def get_torch_rng_dict(base_seed: int, population_size: int, pop_pair_idx: int, step: int, devices: set) -> dict[torch.device, torch.Generator]:
     """
     Create a dictionary of RNGs, one for each device.
     All RNGs are seeded with the same ID to ensure deterministic noise
     across different devices.
     """
-    assert all(device == devices[0] for device in devices), "All devices must be the same for this function."
-    id = base_seed + (num_pop_pairs * num_layers * step) + (pop_pair_idx * num_layers) + layer_idx
-    torch_rng = torch.Generator(device=devices[0]).manual_seed(id)
-
-    # noise_a = torch.normal(
-    #     mean=0.0,
-    #     std=1.0,
-    #     size=shapes[0],
-    #     device=devices[0],
-    #     generator=torch_rng,
-    # )
-
-    # noise_b = torch.empty(shapes[1], device=devices[1])
-    # torch.nn.init.kaiming_normal_(
-    #     noise_b, 
-    #     a=0,                # Negative slope of Leaky ReLU (use 0 for standard ReLU)
-    #     mode='fan_in',      # Preserves variance in forward pass (default)
-    #     nonlinearity='leaky_relu' # Use 'relu' for standard ReLU
-    # )
-
-    noise_a, noise_b = (torch.normal(
-                    mean=0.0,
-                    std=1.0,
-                    size=shape,
-                    device=device,
-                    generator=torch_rng,
-                ) for shape, device in zip(shapes, devices))
-
-    return noise_a, noise_b
+    id = base_seed + (step * (population_size // 2)) + pop_pair_idx
+    rng_dict = {}
+    for device in devices:
+        rng_dict[device] = torch.Generator(device=device).manual_seed(id)
+    return rng_dict
 
 def main(args: Args):
     # print the args
@@ -159,27 +125,13 @@ def main(args: Args):
         device_map="auto",
         trust_remote_code=True
     )
-    peft_model = get_peft_model(base_model, lora_config)
-    peft_model.print_trainable_parameters()
+    master_peft_model = get_peft_model(base_model, lora_config)
+    master_peft_model.print_trainable_parameters()
     
     # 3. Get shapes and devices of trainable parameters
-    params_dict = {}
-    grads_dict = {}
-    base_names = []
-    for name, param in peft_model.named_parameters():
-        params_dict[name] = param
-        if name.endswith(".base_layer.weight"):
-            base_names.append(name.split(".base_layer.weight")[0])
-            grads_dict[name] = torch.zeros_like(param)
-            param.requires_grad = True
-        else:
-            param.requires_grad = False
-
     trainable_params_info = []
     param_devices = set()
-    for name, param in peft_model.named_parameters():
-        if "layers.0" in name:
-            print(f"Parameter: {name}, Requires Grad: {param.requires_grad}, Shape: {param.shape}, Device: {param.device}")
+    for name, param in master_peft_model.named_parameters():
         if param.requires_grad:
             trainable_params_info.append((name, param.shape, param.device))
             param_devices.add(param.device)
@@ -188,9 +140,10 @@ def main(args: Args):
     print(f"Number of GPUs: {args.num_gpus}")
     print(f"PEFT parameter devices: {param_devices}\n")
 
+
     # 4. Initialize Adam optimizer
     optimizer = optim.Adam(
-        [param for name, param in peft_model.named_parameters() if param.requires_grad],
+        [param for param in master_peft_model.parameters() if param.requires_grad],
         lr=args.learning_rate
     )
 
@@ -231,14 +184,14 @@ def main(args: Args):
     # 6. Initialize VLLM with LoRA enabled
     print(f"Loading base model {args.model} into VLLM...")
     llm = LLM(
-        model=args.model,
-        tensor_parallel_size=2 if args.num_gpus % 2 == 0 else 1,
-        pipeline_parallel_size=args.num_gpus // 2 if args.num_gpus % 2 == 0 else args.num_gpus,
-        enable_lora=True,
-        trust_remote_code=True,
-        max_loras=args.population_size,
-        max_lora_rank=max(args.lora_r, 8),
-    )
+            model=args.model,
+            tensor_parallel_size=2 if args.num_gpus % 2 == 0 else 1,
+            pipeline_parallel_size=args.num_gpus // 2 if args.num_gpus % 2 == 0 else args.num_gpus,
+            enable_lora=True,
+            trust_remote_code=True,
+            max_loras=args.population_size,
+            # max_lora_rank=args.lora_r,
+        )
     
     # 7. Define the BASE LoRA requests
     adapter_paths = []
@@ -253,43 +206,51 @@ def main(args: Args):
         print(f"\n======= ES Step {es_step} / {args.num_steps}, Population {pop_step} =======")
 
         # --- 1. Create Population of Noisy Adapters ---
-        with torch.no_grad():
-            if es_step % args.steps_per_adapter == 0:
-                print(f"Creating {args.population_size} noisy adapters from master model...")
-                start_time = time.time()
-                master_state_dict = copy.deepcopy(peft_model.state_dict())
-            
-                for pop_idx in range(args.population_size):
-                    # peft_model.load_state_dict(master_state_dict)
-                    # Create unique LoRA name and path for this adapter at this step
-                    for layer_idx, base_name in enumerate(base_names):
-                        lora_a_name = f"{base_name}.lora_A.default.weight"
-                        lora_b_name = f"{base_name}.lora_B.default.weight"
-                        lora_a = params_dict[lora_a_name]
-                        lora_b = params_dict[lora_b_name]
-                        noise_a, noise_b = get_rng_noise(
-                            base_seed=args.seed,
-                            num_pop_pairs=args.population_size//2,
-                            pop_pair_idx=pop_idx//2,
-                            num_layers=len(base_names),
-                            layer_idx=layer_idx,
-                            step=pop_step,
-                            shapes=[lora_a.shape, lora_b.shape],
-                            devices=[lora_a.device, lora_b.device],
-                        )
-                        noise_b *= args.sigma
-                        lora_a.set_(noise_a)
-                        if pop_idx % 2 == 1:
-                            lora_b.set_(-noise_b)
-                        else:
-                            lora_b.set_(noise_b)
+        if es_step % args.steps_per_adapter == 0:
+            print(f"Creating {args.population_size} noisy adapters from master model...")
+            start_time = time.time()
+            master_state_dict = copy.deepcopy(master_peft_model.state_dict())
+        
+            for pop_idx in range(args.population_size):
+                # Create unique LoRA name and path for this adapter at this step
+                adapter_path = adapter_paths[pop_idx]
 
-                    adapter_path = adapter_paths[pop_idx]
-                    peft_model.save_pretrained(adapter_path)
+                master_peft_model.load_state_dict(master_state_dict)
+                pop_pair_idx = pop_idx // 2
                 
-                peft_model.load_state_dict(master_state_dict)
-                print(f"Population adapter creation time: {time.time() - start_time:.2f} seconds")
-                print(f"--- Population generated and saved ---")
+                torch_rng_dict = get_torch_rng_dict(
+                    base_seed=args.seed,
+                    population_size=args.population_size,
+                    pop_pair_idx=pop_pair_idx,
+                    step=pop_step,
+                    devices=param_devices,
+                )
+
+                with torch.no_grad():
+                    for name, param in master_peft_model.named_parameters():
+                        # print(f"Processing param: {name}, requires_grad={param.requires_grad}, values={param.data.flatten()[:3]}")
+                        if param.requires_grad:
+                            device = param.data.device
+                            torch_rng = torch_rng_dict[device]
+                            
+                            noise = torch.normal(
+                                mean=0.0,
+                                std=1.0,
+                                size=param.data.shape,
+                                device=device,
+                                generator=torch_rng,
+                            )
+                            # Antithetic es noise
+                            if pop_idx % 2 == 1:
+                                noise = -noise
+                            param.data.add_(noise * args.sigma)
+                
+                adapter_path = adapter_paths[pop_idx]
+                master_peft_model.save_pretrained(adapter_path)
+            
+            master_peft_model.load_state_dict(master_state_dict)
+            print(f"Population adapter creation time: {time.time() - start_time:.2f} seconds")
+            print(f"--- Population generated and saved ---")
 
         # --- 2. Evaluate Population ---
         print(f"Evaluating {args.population_size} adapters with vLLM...")
@@ -359,45 +320,51 @@ def main(args: Args):
                 "pop_step": pop_step,
             })
 
-        # 4.2. Zero grads
-        grads_dict = {name: torch.zeros_like(x) for name, x in grads_dict.items()}
+        # 4.2. Initialize surrogate gradients
+        surrogate_grads = []
+        trainable_master_params = []
+        for name, param in master_peft_model.named_parameters():
+            if param.requires_grad:
+                surrogate_grads.append(torch.zeros_like(param.data))
+                trainable_master_params.append(param)
 
         # 4.3. Reconstruct noise and calculate fitness-weighted sum
         for pop_idx in range(args.population_size):
-            if pop_idx % 2 == 0:
-                for layer_idx, base_name in enumerate(base_names):
-                    full_base_name = f"{base_name}.base_layer.weight"
-                    lora_a_name = f"{base_name}.lora_A.default.weight"
-                    lora_b_name = f"{base_name}.lora_B.default.weight"
-                    lora_a = params_dict[lora_a_name]
-                    lora_b = params_dict[lora_b_name]
-                    noise_a, noise_b = get_rng_noise(
-                        base_seed=args.seed,
-                        num_pop_pairs=args.population_size//2,
-                        pop_pair_idx=pop_idx//2,
-                        num_layers=len(base_names),
-                        layer_idx=layer_idx,
-                        step=pop_step,
-                        shapes=[lora_a.shape, lora_b.shape],
-                        devices=[lora_a.device, lora_b.device],
-                    )
-                    noise_b *= args.sigma
-                    noise = torch.matmul(noise_b, noise_a)
-                    fitness1 = normalized_fitnesses[pop_idx]
-                    fitness2 = normalized_fitnesses[pop_idx+1]
-                    grads_dict[full_base_name].add_(noise.to(grads_dict[full_base_name].device) * (fitness1 - fitness2))
-
+            pop_pair_idx = pop_idx // 2
+            
+            torch_rng_dict = get_torch_rng_dict(
+                base_seed=args.seed,
+                population_size=args.population_size,
+                pop_pair_idx=pop_pair_idx,
+                step=pop_step,
+                devices=param_devices
+            )
+            
+            F_i = normalized_fitnesses[pop_idx]
+            
+            for param_idx, (name, shape, device) in enumerate(trainable_params_info):
+                torch_rng = torch_rng_dict[device]
+                
+                noise = torch.normal(
+                    mean=0.0,
+                    std=1.0,
+                    size=shape,
+                    device=device,
+                    generator=torch_rng,
+                )
+                if pop_idx % 2 == 1:
+                    noise = -noise
+                
+                surrogate_grads[param_idx].add_(noise.to(surrogate_grads[param_idx].device) * F_i)
+        
         # 4.4. Apply the gradient to the master model via the optimizer
         # The ES gradient estimate is: (1 / (N * sigma)) * sum(F_i * E_i)
         # We are *maximizing* fitness, so optimizer should *ascend* the gradient.
         # Adam *minimizes*, so we feed it the *negative* gradient.
         optimizer.zero_grad()
         
-        for i, (name, grad) in enumerate(grads_dict.items()):
-            param = params_dict[name]
-            if i == 0:
-                print(f"----{name}: {param.data.flatten()[:5]}, {grad.flatten()[:5]}")
-            gradient = (1.0 / (args.population_size * args.sigma)) * grad
+        for param, grad_sum in zip(trainable_master_params, surrogate_grads):
+            gradient = (1.0 / (args.population_size * args.sigma)) * grad_sum
             param.grad = -gradient
             
         optimizer.step()
