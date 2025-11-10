@@ -16,10 +16,13 @@ class ZerosTask:
     def get_batch(self):
         indices = np.arange(self.batch_size) % len(self.prompts)
         batch_prompts = [self.prompts[i] for i in indices]
-        return batch_prompts, None
+        return batch_prompts, [None for _ in batch_prompts]
        
     def get_fitnesses(self, generations, answers):
         return [sum(c == "0" for c in g)/self.max_tokens for g in generations]
+    
+    def get_fitness(self, generation, answer):
+        return sum(c == "0" for c in generation)/self.max_tokens
 
 
 class MathTask:
@@ -99,3 +102,8 @@ class MathTask:
         model_answers = [self._extract_model_answer(gen)[0] for gen in generations]
         is_corrects = [1.0 if (ma == ga) else 0.0 for ma, ga in zip(model_answers, gt_answers)]
         return is_corrects
+    
+    def get_fitness(self, generation, gt_answer):
+        model_answer = self._extract_model_answer(generation)[0]
+        return 1.0 if (model_answer == gt_answer) else 0.0
+    
