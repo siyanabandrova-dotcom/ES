@@ -11,7 +11,7 @@ class ZerosTask:
             "Hello, my name is",
             "Write some random numbers: ",
         ]
-        assert batch_size <= len(self.prompts), f"{batch_size=} must be <= {len(self.dataset)=}"
+        assert batch_size <= len(self.prompts), f"{batch_size=} must be <= {len(self.prompts)=}"
 
     def get_batch(self):
         indices = np.arange(self.batch_size) % len(self.prompts)
@@ -62,7 +62,7 @@ class MathTask:
                     text = re.sub(regex, "", text)
                 return text, "answer extracted"
             else:
-                print("NO REGEX MATCH FOUND")
+                # print("NO REGEX MATCH FOUND")
                 return None, "No regex match found"
 
         elif self.ans_format == "boxed":

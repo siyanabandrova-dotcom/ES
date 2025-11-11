@@ -18,8 +18,7 @@ $ source .venv/bin/activate(vllm_env) $ srun --gpus 1 uv pip install -U vllm --t
 ```
 # Setup
 srun --gpus=1 --time=03:00:00 --pty /bin/bash --login
-source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate
-cd $HOME/Documents/esvllm-outer/hyperscale-es-vllm
+source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate && cd $HOME/Documents/esvllm-outer/hyperscale-es-vllm && export WANDB_DIR=$SCRATCH/for_esvllm/wandb
 python es_lora_nccl_async.py --sigma 0.01 --max-tokens 64 --learning-rate 0.001
 python es_lora_nccl_async.py --no-use-wandb --sigma 0.001 --max-tokens 64 --population-size 4 --samples-per-prompt 3 --temperature 0.7
 
@@ -34,6 +33,12 @@ python es_lora_nccl.py --no-use-wandb
 python es_lora_nccl_sync.py --no-use-wandb
 python es_lora_nccl_async.py --no-use-wandb
 python es_lora_nccl_async.py --sigma 0.01 --max-tokens 64 --learning-rate 0.01 --no-use-wandb
+python es_lora_nccl_async.py --sigma 0.01 --learning-rate 0.01 --max-tokens 1024 --steps-per-adapter 10 --name-prefix time2 --task gsm8k --prompt-batch-size 32
+python es_lora_nccl_async.py --sigma 0.01 --learning-rate 0.01 --max-tokens 64 --steps-per-adapter 4 --name-prefix time2 --task gsm8k --prompt-batch-size 4 --no-use-wandb
+python es_lora_nccl_async.py --sigma 0.01 --learning-rate 0.01 --max-tokens 64 --steps-per-adapter 4 --name-prefix time2 --task zeros --prompt-batch-size 2 --population-size 10 --no-use-wandb
+python es_lora_nccl_async.py --sigma 0.0 --learning-rate 0.0 --max-tokens 1024 --steps-per-adapter 4 --task gsm8k --prompt-batch-size 2 --population-size 10 --no-use-wandb --name-prefix A
+python es_lora_nccl_async.py --sigma 0.001 --learning-rate 0.001 --max-tokens 1024 --steps-per-adapter 4 --task gsm8k --prompt-batch-size 16 --sub-dataset-size 16 --population-size 100 --no-use-wandb --name-prefix A
+python es_lora_nccl_async.py --sigma 0.001 --learning-rate 0.001 --max-tokens 64 --steps-per-adapter 4 --task gsm8k --prompt-batch-size 4 --sub-dataset-size 4 --population-size 10 --no-use-wandb --name-prefix A
 ```
 
 
