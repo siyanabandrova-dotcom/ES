@@ -2,7 +2,7 @@
 
 #SBATCH --job-name=es_lora_nccl   # A name for your job
 #SBATCH --gpus=1                  # Request 1 GPU (adjust as needed)
-#SBATCH --time=03:00:00           # Time limit hrs:min:sec (from your srun)
+#SBATCH --time=02:00:00           # Time limit hrs:min:sec (from your srun)
 #SBATCH --output=/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/logs/es_lora_%j.log    # Log file path (%u is user, %j is job ID)
 
 # --- Create logs directory if it doesn't exist ---
@@ -25,9 +25,24 @@ population_size=${5}
 steps_per_adapter=${6}
 lora_r=${7}
 task=${8}
-prompt_batch_size=${9}
-sub_dataset_size=${10}
-name_prefix=${11}
+normalize_with_std=${9}
+prompt_batch_size=${10}
+sub_dataset_size=${11}
+name_prefix=${12}
+
+
+# Run with:
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 100 4 4 "gsm8k" no-normalize-with-std 16 16 "A"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 100 4 4 "gsm8k-boxed" no-normalize-with-std 16 16 "A"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 100 4 4 "countdown" no-normalize-with-std 16 16 "A"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 100 4 4 "zeros" no-normalize-with-std 3 3 "A"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.0001 1024 "Qwen/Qwen3-4B" 100 4 4 "gsm8k-boxed" no-normalize-with-std 16 16 "Alr"
+
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 64 "Qwen/Qwen3-0.6B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.01 0.01 64 "Qwen/Qwen3-0.6B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.01 0.001 64 "Qwen/Qwen3-0.6B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.01 64 "Qwen/Qwen3-0.6B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 64 "Qwen/Qwen2.5-0.5B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
 
 # --- Echo parameters for logging ---
 echo "Parameters:"
@@ -39,7 +54,9 @@ echo "  population_size: $population_size"
 echo "  steps_per_adapter: $steps_per_adapter"
 echo "  lora_r: $lora_r"
 echo "  task: $task"
+echo "  normalize_with_std: $normalize_with_std"
 echo "  prompt_batch_size: $prompt_batch_size"
+echo "  sub_dataset_size: $sub_dataset_size"
 echo "  name_prefix: $name_prefix"
 echo "---------------------------------"
 
@@ -59,14 +76,15 @@ python es_lora_nccl_async.py \
     --sigma $sigma \
     --learning-rate $learning_rate \
     --max-tokens $max_tokens \
-    --model-name "$model_name" \
+    --model-name $model_name \
     --population-size $population_size \
     --steps-per-adapter $steps_per_adapter \
     --lora-r $lora_r \
     --task $task \
+    --${normalize_with_std} \
     --prompt-batch-size $prompt_batch_size \
     --sub-dataset-size $sub_dataset_size \
-    --name-prefix "$name_prefix" \
+    --name-prefix $name_prefix \
     --use-wandb
 
 echo "---------------------------------"
@@ -74,6 +92,3 @@ echo "Job finished with exit code $?"
 echo "---------------------------------"
 
 # See readme for example of how to submit.
-
-# run with:
-# sbatch slurm_launch.sh 0.01 0.01 1024 "Qwen/Qwen2-0.5B" 1000 10 4 "gsm8k" 32 1000 "time2"
