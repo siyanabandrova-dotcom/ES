@@ -43,7 +43,8 @@ python es_lora_nccl_async.py --sigma 0.0 --learning-rate 0.0 --max-tokens 10000 
 python es_lora_nccl_async.py --sigma 0.0 --learning-rate 0.0 --max-tokens 10000 --steps-per-adapter 4 --task gsm8k --prompt-batch-size 32 --sub-dataset-size 1000 --no-use-wandb --name-prefix A --model-name "Qwen/Qwen3-4B" --temperature 0.7 --samples-per-prompt 4 --population_size 2
 python es_lora_nccl_async.py --sigma 0.0 --learning-rate 0.0 --max-tokens 10000 --steps-per-adapter 4 --task zeros --prompt-batch-size 3 --sub-dataset-size 3 --no-use-wandb --name-prefix A --model-name "Qwen/Qwen3-4B" --temperature 0.7 --samples-per-prompt 4 --population_size 2
 python es_lora_nccl_async.py --sigma 0.001 --learning-rate 0.001 --max-tokens 1024 --steps-per-adapter 4 --task countdown --prompt-batch-size 16 --sub-dataset-size 16 --no-use-wandb --name-prefix A --model-name "Qwen/Qwen3-4B" --temperature 0.0 --samples-per-prompt 4 --population_size 2
-python es_lora_nccl_async.py --sigma 0.001 --learning-rate 0.001 --max-tokens 64 --steps-per-adapter 4 --task zeros --prompt-batch-size 3 --sub-dataset-size 3 --no-use-wandb --name-prefix debug --model-name "Qwen/Qwen2.5-0.5B" --temperature 0.0 --samples-per-prompt 1 --population_size 10
+python es_lora_nccl_async.py --sigma 0.001 --learning-rate 0.001 --max-tokens 64 --steps-per-adapter 4 --task zeros --prompt-batch-size 3 --sub-dataset-size 3 --no-use-wandb --name-prefix debug --model-name "Qwen/Qwen2.5-0.5B" --temperature 0.0 --samples-per-prompt 1 --population_size 100
+python es_lora_nccl_async.py --sigma 0.001 --learning-rate 0.001 --max-tokens 1024 --steps-per-adapter 4 --task gsm8k-boxed --prompt-batch-size 16 --sub-dataset-size 1000 --no-use-wandb --name-prefix debug --model-name "Qwen/Qwen2.5-1.5B" --temperature 0.0 --samples-per-prompt 1 --population_size 10
 ```
 
 

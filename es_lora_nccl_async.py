@@ -36,7 +36,7 @@ class Args:
     model_name: str = "Qwen/Qwen2-0.5B" # "Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen3-1.7B"
     # --- ES Hyperparameters ---
     sigma: float = 0.001
-    population_size: int = 100
+    population_size: int = 128
     num_iterations: int = 1000
     max_tokens: int = 1024
     temperature: float = 0.0
@@ -545,14 +545,10 @@ def main(args: Args):
     print("\n--- Starting ASYNCHRONOUS ES Training Loop ---")
     
     # Store LoRARequest objects
-    lora_requests = []
-    for pop_idx in range(args.population_size):
-        lora_name = f"adapter_{pop_idx}"
-        lora_int_id = pop_idx + 1 # Start from 1
-        lora_path = os.path.join(LORA_POPULATION_PATH, f"pop_{pop_idx}")
-        lora_requests.append(
-            LoRARequest(lora_name=lora_name, lora_int_id=lora_int_id, lora_path=lora_path)
-        )
+    lora_paths = [
+        os.path.join(LORA_POPULATION_PATH, f"pop_{pop_idx}") for pop_idx in range(args.population_size)
+    ]
+    lora_int_id = 1
 
     sampling_params = SamplingParams(
         temperature=args.temperature,
@@ -580,17 +576,29 @@ def main(args: Args):
         else:
             lora_gen_time = 0.0
 
+        # Prepare LoRARequest objects for the entire population
+        lora_requests = []
+        for pop_idx, lora_path in enumerate(lora_paths):
+            lora_requests.append(
+                LoRARequest(
+                    lora_name=f"adapter_{pop_idx}",
+                    lora_int_id=lora_int_id,
+                    lora_path=lora_path
+                )
+            )
+            lora_int_id += 1  # Increment to ensure unique IDs across steps
+
         # 2. Evaluate Population (ASYNCHRONOUS SCATTER/GATHER)
         # SCATTER: Launch all tasks asynchronously and collect references
         vllm_start = time.time()
         all_refs = []
+        prompts, answers = task.get_batch()
         for engine_idx in range(args.num_engines):
             llm = engines[engine_idx]
             engine_lora_requests = lora_requests[
                 engine_idx * loras_per_engine : (engine_idx + 1) * loras_per_engine]
 
             # Launch the remote task (non-blocking)
-            prompts, answers = task.get_batch()
             repeated_engine_lora_requests = []
             repeated_prompts = []
             for lora_request in engine_lora_requests:
@@ -758,7 +766,7 @@ def main(args: Args):
         current_time = time.time()
         print(f"Mean fitness: {mean_fitness:.4f}, min: {min_fitness:.4f}, max: {max_fitness:.4f}, std_normalized_fitness: {std_normalized_fitness:.4f}, pass@k fitness: {pass_at_k_fitness:.4f}, std_in_samples: {std_in_samples:.4f}, prop_truncated: {prop_truncated:.4f}, num_distinct_model_answers_mean: {num_distinct_model_answers_mean:.4f}")
         fitnesses_so_far.append(mean_fitness)
-        print(f"\nFitnesses so far: {fitnesses_so_far}\n")
+        print(f"\n---\nFitnesses so far: {fitnesses_so_far}\n---\n")
 
         # Compute ES update ONLY on engine 0
         update_start = time.time()

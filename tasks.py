@@ -9,9 +9,10 @@ class ZerosTask:
         self.batch_size = batch_size
         self.max_tokens = max_tokens
         self.prompts = [
-            "Output 3 numbers and then stop: ",
             "Hello, my name is",
-            "Write some random numbers: ",
+            "Write some random numbers:",
+            "Output 3 numbers and then stop:",
+            # "Output zeros:",
         ]
         assert batch_size <= len(self.prompts), f"{batch_size=} must be <= {len(self.prompts)=}"
 
