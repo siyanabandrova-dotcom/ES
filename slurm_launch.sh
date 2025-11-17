@@ -32,17 +32,24 @@ name_prefix=${12}
 
 
 # Run with:
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 100 4 4 "gsm8k" no-normalize-with-std 16 16 "A"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 100 4 4 "gsm8k-boxed" no-normalize-with-std 16 16 "A"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 100 4 4 "countdown" no-normalize-with-std 16 16 "A"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 100 4 4 "zeros" no-normalize-with-std 3 3 "A"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.0001 1024 "Qwen/Qwen3-4B" 100 4 4 "gsm8k-boxed" no-normalize-with-std 16 16 "Alr"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 128 4 4 "gsm8k" no-normalize-with-std 16 16 "A"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 128 4 4 "gsm8k-boxed" no-normalize-with-std 16 16 "A"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 128 4 4 "countdown" no-normalize-with-std 16 16 "A"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 128 4 4 "zeros" no-normalize-with-std 3 3 "A"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.0001 1024 "Qwen/Qwen3-4B" 128 4 4 "gsm8k-boxed" no-normalize-with-std 16 16 "Alr"
 
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 64 "Qwen/Qwen3-0.6B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.01 0.01 64 "Qwen/Qwen3-0.6B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.01 0.001 64 "Qwen/Qwen3-0.6B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.01 64 "Qwen/Qwen3-0.6B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 64 "Qwen/Qwen2.5-0.5B" 100 4 4 "zeros" no-normalize-with-std 3 3 "B"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 64 "Qwen/Qwen3-0.6B" 128 4 4 "zeros" no-normalize-with-std 3 3 "B"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.01 0.01 64 "Qwen/Qwen3-0.6B" 128 4 4 "zeros" no-normalize-with-std 3 3 "B"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.01 0.001 64 "Qwen/Qwen3-0.6B" 128 4 4 "zeros" no-normalize-with-std 3 3 "B"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.01 64 "Qwen/Qwen3-0.6B" 128 4 4 "zeros" no-normalize-with-std 3 3 "B"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 64 "Qwen/Qwen2.5-0.5B" 128 4 4 "zeros" no-normalize-with-std 3 3 "B"
+
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 128 4 4 "gsm8k-boxed" no-normalize-with-std 16 1000 "C"
+
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 64 4 4 "gsm8k-boxed" no-normalize-with-std 16 1000 "D64"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 256 4 4 "gsm8k-boxed" no-normalize-with-std 16 1000 "D256"
+
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 128 4 4 "gsm8k-boxed" normalize-with-std 16 1000 "Estd"
 
 # --- Echo parameters for logging ---
 echo "Parameters:"
