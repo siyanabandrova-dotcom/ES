@@ -1,8 +1,55 @@
 import re
 import numpy as np
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from typing import List, Optional, Dict, Any
+import gem
+from gem.utils.parsing import extract_last_boxed_answer
 
+def extract_model_answer(text, ans_format="none"):
+        regex_pattern = "(-?[$0-9.,]{2,})|(-?[0-9]+)"
+        regexes_to_ignore =[
+            ",",
+            "\\$",
+            "(?s).*#### ",
+            "\\.$"
+        ]
+        if ans_format == "none":
+            match = re.findall(regex_pattern, text)
+            if match:
+                match = match[-1] # take the last regex match
+                if isinstance(match, tuple):
+                    match = [m for m in match if m][0]
+                text = match.strip()
+
+                for regex in regexes_to_ignore:
+                    text = re.sub(regex, "", text)
+                return text, "answer extracted"
+            else:
+                # print("NO REGEX MATCH FOUND")
+                return None, "No regex match found"
+
+        elif ans_format == "boxed":
+            splits = text.split("boxed{")
+            if len(splits) < 2:
+                return None, "No `boxed{` found"
+            else:
+                text = splits[-1].strip() # take the last `boxed{`
+                
+                match = re.findall(regex_pattern, text)
+                if match:
+                    match = match[0] # take the first regex match
+                    if isinstance(match, tuple):
+                        match = [m for m in match if m][0]
+                    text = match.strip()
+
+                    for regex in regexes_to_ignore:
+                        text = re.sub(regex, "", text)
+                    return text, "answer extracted"
+                else:
+                    return None, "No regex match found"
+        
+        else:
+            raise ValueError(f"Unknown {ans_format=}")
 
 class ZerosTask:
     def __init__(self, batch_size, max_tokens):
@@ -26,7 +73,134 @@ class ZerosTask:
     
     def get_fitness(self, generation, answer):
         return sum(c == "0" for c in generation)/self.max_tokens, None
+    
+class RandomTask:
+    def __init__(self, batch_size, max_tokens, max_random_number, answer_format="none"):
+        self.batch_size = batch_size
+        self.max_tokens = max_tokens
+        self.prompt = "Pick a random number between 1 and " + str(max_random_number) + " (inclusive)."
+        self.ans_format = answer_format
+        if self.ans_format == "none":
+            pass
+        elif self.ans_format == "boxed":
+            self.prompt += " Format your pick in \\boxed{}."
+        else:
+            raise ValueError(f"Unknown {self.ans_format=}")
+        self.prompt = f"User: {self.prompt}\n\nAssistant:"
+        self.max_random_number = max_random_number
 
+    def get_batch(self):
+        batch_prompts = [self.prompt for _ in range(self.batch_size)]
+        batch_answers = np.random.randint(1, self.max_random_number+1, size=self.batch_size).tolist()
+        return batch_prompts, batch_answers
+    
+    def get_fitness(self, generation, answer):
+        model_answer, _ = extract_model_answer(generation, ans_format=self.ans_format)
+        try:
+            model_answer = int(model_answer)
+        except:
+            model_answer = None
+        is_correct = (model_answer is not None) and (model_answer == int(answer))
+        return 1.0 if is_correct else 0.0, model_answer
+
+from gem.utils.math_grader import extract_answer, grade
+
+def boxed_reward_fn(model_answer, gt_answer, fast=False,):
+    if isinstance(gt_answer, float) or isinstance(gt_answer, int):
+        gt_answer = str(gt_answer)
+    if isinstance(gt_answer, str):
+        is_correct = grade(model_answer, gt_answer, fast)
+    elif isinstance(gt_answer, list):
+        is_correct = False
+        for gt in gt_answer:
+            is_correct |= grade(model_answer, gt, fast)
+    return is_correct
+
+class MathTask2:
+    def __init__(self, batch_size, tokenizer=None, dataset_name="gsm8k", datset_size=None, apply_chat_template=False):
+        self.dataset_name = dataset_name
+        dataset_names_dict = {
+            "gsm8k": ("axon-rl/GSM-8k", "train", True),
+            "asdiv2k": ("axon-rl/ASDIV-2k", "train", True),
+            "math12k": ("axon-rl/MATH-12k", "train", True),
+            "orz57k": ("axon-rl/ORZ-57k", "train", True),
+            "deepscaler40k": ("axon-rl/DeepScaleR-40K", "train", True),
+            "math-eval": ("axon-rl/math-eval", ["math", "amc", "olympiad_bench", "minerva", "aime24"], False),
+        }
+        assert dataset_name.lower() in dataset_names_dict, f"Unknown dataset_name {dataset_name}. Supported: {list(dataset_names_dict.keys())}"
+        dataset_name, splits, is_train = dataset_names_dict[dataset_name.lower()]
+        self.is_train = is_train
+        if is_train:
+            self.dataset = load_dataset(dataset_name, split=splits)
+            if datset_size is not None:
+                self.dataset = self.dataset.select(range(datset_size))
+        else:
+            self.split_names = splits
+            self.dataset = load_dataset(dataset_name)
+        self.apply_chat_template = apply_chat_template
+        self.tokenizer = tokenizer
+        self.batch_size = batch_size
+        if is_train:
+            self.idx = 0
+
+    @staticmethod
+    def check_correct(generation: str, gt_answer: str) -> bool:
+        """Check if the action is correct."""
+        # get correct answers from the dataset entry
+        if isinstance(gt_answer, (str, float, int)):
+            correct_answers = [str(gt_answer)]
+        elif isinstance(gt_answer, list):
+            correct_answers = gt_answer
+        else:
+            raise ValueError(f"Unexpected answer type: {type(gt_answer)}")
+
+        # check against all possible correct answers
+        model_answer = extract_answer(generation)
+        if model_answer is None:
+            is_correct = False
+        else:
+            for correct_answer in correct_answers:
+                is_correct = boxed_reward_fn(model_answer, correct_answer, fast=True)
+                if is_correct:
+                    break
+        return is_correct, model_answer
+    
+    def _format_conversation(self, example):
+        instruction_str = "Please reason step by step, and put your final answer within \\boxed{}."
+        problem = f"{example['problem']}\n{instruction_str}"
+        if self.apply_chat_template:
+            return self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": problem}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        else:
+            return f"User: {problem}\nAssistant: <think"
+        
+    def _format_examples(self, examples):
+        batch_prompts = [self._format_conversation(example) for example in examples]
+        batch_answers = [example["answer"] for example in examples]    
+        return batch_prompts, batch_answers
+
+    def get_batch(self):
+        assert self.is_train, f"get_batch can only be called on a train dataset, not on {self.dataset_name=}."
+        indices = np.arange(self.idx, self.idx + self.batch_size) % len(self.dataset)
+        self.idx += self.batch_size
+        examples = [self.dataset[i] for i in indices]
+        return self._format_examples(examples)
+        
+    def get_eval_batch(self):
+        assert self.is_train == False, f"get_eval_batch can only be called in eval mode, not on {self.dataset_name=}."
+        indices = np.arange(self.batch_size)
+        examples = []
+        for split in self.split_names:
+            split_dataset = self.dataset[split]
+            examples.extend([split_dataset[i] for i in indices])
+        return self._format_examples(examples)
+    
+    def get_fitness(self, generation, gt_answer):
+        is_correct, model_answer = self.check_correct(generation, gt_answer)
+        return 1.0 if is_correct else 0.0, model_answer
 
 class MathTask:
     def __init__(self, batch_size, dataset_name="openai/gsm8k", split="train", datset_size=None, answer_format="none"):
@@ -43,52 +217,6 @@ class MathTask:
     
     def _extract_gt_answer(self, text):
         return text.split('####')[-1].strip()
-    
-    def _extract_model_answer(self, text):
-        regex_pattern = "(-?[$0-9.,]{2,})|(-?[0-9]+)"
-        regexes_to_ignore =[
-            ",",
-            "\\$",
-            "(?s).*#### ",
-            "\\.$"
-        ]
-        if self.ans_format == "none":
-            match = re.findall(regex_pattern, text)
-            if match:
-                match = match[-1] # take the last regex match
-                if isinstance(match, tuple):
-                    match = [m for m in match if m][0]
-                text = match.strip()
-
-                for regex in regexes_to_ignore:
-                    text = re.sub(regex, "", text)
-                return text, "answer extracted"
-            else:
-                # print("NO REGEX MATCH FOUND")
-                return None, "No regex match found"
-
-        elif self.ans_format == "boxed":
-            splits = text.split("boxed{")
-            if len(splits) < 2:
-                return None, "No `boxed{` found"
-            else:
-                text = splits[-1].strip() # take the last `boxed{`
-                
-                match = re.findall(regex_pattern, text)
-                if match:
-                    match = match[0] # take the first regex match
-                    if isinstance(match, tuple):
-                        match = [m for m in match if m][0]
-                    text = match.strip()
-
-                    for regex in regexes_to_ignore:
-                        text = re.sub(regex, "", text)
-                    return text, "answer extracted"
-                else:
-                    return None, "No regex match found"
-        
-        else:
-            raise ValueError(f"Unknown ans_format {self.ans_format}")
 
     def get_batch(self):
         """Returns a list of prompt and answer strings of length batch_size."""
@@ -101,12 +229,12 @@ class MathTask:
 
     def get_fitnesses(self, generations, gt_answers):
         assert len(generations) == len(gt_answers), f"{len(generations)=} must be equal to {len(gt_answers)=}"
-        model_answers = [self._extract_model_answer(gen)[0] for gen in generations]
+        model_answers = [extract_model_answer(gen, ans_format=self.ans_format)[0] for gen in generations]
         is_corrects = [1.0 if (ma == ga) else 0.0 for ma, ga in zip(model_answers, gt_answers)]
         return is_corrects, model_answers
     
     def get_fitness(self, generation, gt_answer):
-        model_answer = self._extract_model_answer(generation)[0]
+        model_answer = extract_model_answer(generation, ans_format=self.ans_format)[0]
         is_correct = 1.0 if (model_answer == gt_answer) else 0.0
         return is_correct, model_answer
     
@@ -210,4 +338,94 @@ class CountdownTask:
         answer_reward, model_answer = self._answer_reward_function(generation, numbers, target)
         reward = format_reward * 0.1 + answer_reward
         return reward, model_answer
+    
+
+########### FOR GEM TASKS ############
+import gem
+from gem.utils.parsing import extract_last_boxed_answer
+from gem.wrappers.wrapper_factory import get_wrapper_fns
+
+def apply_qwen3_game_template(observation: str) -> str:
+    return (
+        f"<|im_start|>user\nYou are playing language games. Make valid actions to win.\nObservation: {observation}"
+        "\nPlease reason step by step, and put your final answer within \\boxed{}.<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+
+
+def apply_no_template(observation: str) -> str:
+    return observation
+
+
+def apply_qwen3_general_template(question: str) -> str:
+    return (
+        f"<|im_start|>user\nQuestion: {question}"
+        "\nPlease reason step by step, and put your final answer within \\boxed{}.<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+
+
+def apply_code_template(question: str) -> str:
+    return (
+        "You are an expert Python programmer. "
+        "You will be given a question (problem specification) and will generate a correct "
+        "Python program that matches the specification and passes all tests."
+        f"\nQuestion: {question}"
+        "\nPlease reason step by step, and write your code in markdown format, e.g., ```python\n# YOUR CODE HERE\n```."
+    )
+
+
+TEMPLATE_FACTORY = {
+    "qwen3_game": apply_qwen3_game_template,
+    "no": apply_no_template,
+    "qwen3_general": apply_qwen3_general_template,
+    "code": apply_code_template,
+}
+
+INVALID_ACTION = "<｜INVALID_ACTION｜>"
+
+    
+class GEMWrapperTask:
+    def __init__(self, env_id, batch_size, tokenizer, gamma=1.0, max_steps=10, wrappers=None, prompt_template=None, apply_chat_template=None):
+
+        if wrappers is None and prompt_template is None and apply_chat_template is None:
+            if env_id.startswith("math:"):
+                self.wrappers = "concat_chat"
+                self.prompt_template = TEMPLATE_FACTORY["no"]
+                self.apply_chat_template = False
+            elif env_id.startswith("game:"):
+                self.wrappers = "concat"
+                self.prompt_template = TEMPLATE_FACTORY["qwen3_game"]
+                self.apply_chat_template = False
+            elif env_id.startswith("rg:"):
+                self.wrappers = ""
+                self.prompt_template = TEMPLATE_FACTORY["qwen3_general"]
+                self.apply_chat_template = False
+            elif env_id.startswith("code:"):
+                self.wrappers = ""
+                self.prompt_template = TEMPLATE_FACTORY["code"]
+                self.apply_chat_template = True
+
+            if env_id.endswith(":python_tool"):
+                self.wrappers = "python_tool_no_int_reward," + self.wrappers if self.wrappers != "" else "python_tool_no_int_reward"
+                env_id = env_id.split(":python_tool")[0]
+        else:
+            self.wrappers = wrappers
+            self.prompt_template = prompt_template
+            self.apply_chat_template = apply_chat_template
+
+        self.env_id = env_id
+        self.wrapper_fns = get_wrapper_fns(self.wrappers, tokenizer=tokenizer)
+        self.batch_size = batch_size
+        self.tokenizer = tokenizer
+        self.gamma = gamma
+        self.max_steps = max_steps
+        self.idx = 0
+
+    def get_batch(self):
+        """Returns a list of seeds as strings of length batch_size."""
+        seeds = np.arange(self.idx, self.idx + self.batch_size).tolist()
+        self.idx += self.batch_size
+        dummy_answers = ["" for _ in seeds]
+        return seeds, dummy_answers
     

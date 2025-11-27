@@ -26,6 +26,8 @@ from peft import LoraConfig, get_peft_model
 from vllm.lora.request import LoRARequest
 from safetensors.torch import save_file
 
+from tasks import MathTask, CountdownTask, ZerosTask, MathTask2, RandomTask
+
 # Default Hyperparameters
 EXPERIMENT_DIR = "/dev/shm/outputs_es_lora"
 LORA_POPULATION_PATH = "/dev/shm/es_lora_population_async"
@@ -43,9 +45,9 @@ class Args:
     samples_per_prompt: int = 1
     task: str = "zeros"  # Options: "zeros", "gsm8k", "gsm8k-boxed"
     prompt_batch_size: int = 2
-    pass_at_k: bool = False # Whether to optimize for pass@k (for tasks like GSM8K)
+    pass_at_k: bool = False
     normalize_with_std: bool = False
-    
+
     # --- LoRA Config ---
     lora_r: int = 4
     lora_alpha: int = 1
@@ -58,7 +60,9 @@ class Args:
     num_engines: int = None
     verbose: bool = True
     base_seed: int = 0
-    sub_dataset_size: int = 1000
+    sub_dataset_size: int = None
+    steps_per_eval: int = 10 # -1 to disable
+    eval_batch_size: int = 16 # Number of episodes/problems to run during eval
 
     # --- WandB ---
     use_wandb: bool = True
@@ -118,7 +122,6 @@ def map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, device: torch.
     return vllm_updates_dict
 
 
-
 def _stateless_init_process_group(master_address, master_port, gpu_rank, world_size, device):
     """Initializes PyNcclCommunicator using StatelessProcessGroup."""
     try:
@@ -156,21 +159,15 @@ def get_rng_noise(
                     size=shape,
                     generator=torch_rng,
                 ) for shape in shapes)
-
     return noise_a, noise_b
 
 @torch.no_grad()
 def create_lora_adapter_files(
     peft_model, peft_params_dict, peft_state_dict, peft_shapes_dict, adapter_paths, es_step, args: Args
 ):
-    """
-    Creates and saves the LoRA A and B weights for a single population member, 
-    incorporating the ES noise.
-    """
     pop_step = es_step // args.steps_per_adapter
     for pop_idx in range(args.population_size):
         peft_model.load_state_dict(peft_state_dict)
-        # Create unique LoRA name and path for this adapter at this step
         for layer_idx, (peft_name, weight_shape) in enumerate(peft_shapes_dict.items()):
             lora_a_name = peft_name.replace("base_layer.weight", "lora_A.default.weight")
             lora_b_name = peft_name.replace("base_layer.weight", "lora_B.default.weight")
@@ -203,46 +200,6 @@ def create_lora_adapter_files(
 
     gc.collect()
     torch.cuda.empty_cache()
-
-@ray.remote
-def process_engine_outputs_and_calc_fitness(
-    engine_outputs, 
-    task_obj, 
-    answers, 
-    engine_lora_count, 
-    prompt_count, 
-    samples_per_prompt
-) -> np.ndarray:
-    """
-    This task runs remotely. It gets the outputs from one engine,
-    calculates fitness for all of them, and returns just the fitness array.
-    """
-    
-    # 1. Parse outputs and calculate fitness (combines old loops)
-    fitness_array = np.zeros((engine_lora_count, prompt_count, samples_per_prompt))
-    num_distinct_model_answers_array = np.zeros((engine_lora_count, prompt_count))
-    total_responses = 0
-    num_truncated = 0
-    
-    for i, output in enumerate(engine_outputs):
-        # assert False, f"\n\n{output}\n\n"
-        # Calculate which pop_idx and prompt_idx this output corresponds to
-        pop_idx_local = i // prompt_count  # LoRA index relative to this engine
-        prompt_idx = i % prompt_count
-        
-        answer_to_q = answers[prompt_idx]
-        model_answers_set = set()
-        for sample_idx, sample_output in enumerate(output.outputs):
-            response_text = sample_output.text
-            fitness, model_answer = task_obj.get_fitness(response_text, answer_to_q)
-            fitness_array[pop_idx_local, prompt_idx, sample_idx] = fitness
-            if model_answer is not None:
-                model_answers_set.add(model_answer)
-            total_responses += 1
-            num_truncated += 1 if sample_output.finish_reason == "length" else 0
-        num_distinct_model_answers_array[pop_idx_local, prompt_idx] = len(model_answers_set)
-            
-    return fitness_array, total_responses, num_truncated, num_distinct_model_answers_array
 
 class WorkerExtension:
     """
@@ -303,7 +260,6 @@ class WorkerExtension:
         return True
     
     def init_inter_engine_group(self, master_address: str, master_port: int, gpu_rank: int, world_size: int):
-        """Initializes the NCCL communication group across all engines."""
         self.device = self.model_runner.device
         self.gpu_rank = gpu_rank
         self.world_size = world_size
@@ -314,7 +270,6 @@ class WorkerExtension:
 
     @torch.no_grad()
     def broadcast_all_weights(self, src_rank: int):
-        """Broadcasts all base model weights from src_rank (Engine 0) to all others."""
         if not self.inter_pg:
             return False
 
@@ -332,9 +287,86 @@ class ESNcclLLM(LLM):
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         super().__init__(*args, **kwargs)
 
+    def generate_and_score(self, prompts, sampling_params, lora_requests, task_obj, answers):
+        """
+        Generates responses AND calculates fitness/stats on the GPU worker.
+        """
+        request_outputs = self.generate(
+            prompts, 
+            sampling_params, 
+            lora_request=lora_requests, 
+            use_tqdm=True,
+        )
+
+        # 2. Calculate fitness immediately (Local CPU)
+        fitness_list = []
+        distinct_counts = []
+        total_responses = 0
+        num_truncated = 0
+        mean_char_lengths = []
+        mean_token_lengths = []
+        responses_for_logging = []
+        
+        num_prompts = len(answers)
+        
+        # We process linearly.
+        pop_responses_buffer = "" # Renamed for clarity
+
+        for i, output in enumerate(request_outputs):
+            prompt_idx = i % num_prompts
+            pop_idx = i // num_prompts
+            gt_answer = answers[prompt_idx]
+            
+            sample_fitnesses = []
+            sample_char_lens = []
+            sample_token_lens = []
+            model_answers_set = set()
+
+            # Format current sample for potential logging
+            if pop_idx < 2 and prompt_idx < 3:
+                current_prompt_log = f"\n[PROMPT {prompt_idx}]: {prompts[i]}\n"
+            for j, sample in enumerate(output.outputs):
+                text = sample.text
+                fit, model_ans = task_obj.get_fitness(text, gt_answer)
+                sample_fitnesses.append(fit)
+                if model_ans:
+                    model_answers_set.add(model_ans)
+                
+                if sample.finish_reason == "length":
+                    num_truncated += 1
+                
+                sample_char_lens.append(len(text))
+                sample_token_lens.append(len(sample.token_ids))
+                total_responses += 1
+                if pop_idx < 2 and prompt_idx < 3:
+                    current_prompt_log += f"\n------SAMPLE {j+1}: {text} || FIT={fit}\n"
+
+            if pop_idx < 2 and prompt_idx < 3:
+                pop_responses_buffer += current_prompt_log
+
+            if (i + 1) % num_prompts == 0 and pop_responses_buffer != "":
+                if pop_responses_buffer:
+                    header = f"-----POP {pop_idx} BATCH LOG-----\n"
+                    responses_for_logging.append(header + pop_responses_buffer)
+                    pop_responses_buffer = ""
+
+            fitness_list.append(sample_fitnesses)
+            distinct_counts.append(len(model_answers_set))
+            mean_char_lengths.append(np.mean(sample_char_lens))
+            mean_token_lengths.append(np.mean(sample_token_lens))
+
+        info = {
+            "total_responses": total_responses,
+            "prop_truncated": num_truncated / total_responses if total_responses > 0 else 0.0,
+            "mean_char_length": np.mean(mean_char_lengths),
+            "mean_token_length": np.mean(mean_token_lengths),
+            "mean_distinct_counts": np.mean(distinct_counts),
+        }
+
+        return fitness_list, info, responses_for_logging
+
 def launch_engines(num_engines, model_name, population_size, lora_r):
     """Launches multiple vLLM engines, each dedicated to one GPU via Ray Placement Groups."""
-    # Strict 1-GPU isolation via PGs
     print(f"Creating {num_engines} placement groups (1 GPU each).")
     pgs = [placement_group([{"GPU": 1, "CPU": 0}], lifetime="detached") for _ in range(num_engines)]
     ray.get([pg.ready() for pg in pgs])
@@ -350,12 +382,11 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
 
     print(f"Launching {num_engines} ESNcclLLM Ray actors.")
     engines = [
-        # Note: worker_extension_cls must point to the class name defined in this file
         ray.remote(num_cpus=0, num_gpus=0, scheduling_strategy=strategy)(ESNcclLLM).remote(
             model=model_name,
             tensor_parallel_size=1,
             distributed_executor_backend="ray",
-            worker_extension_cls="es_lora_nccl_async.WorkerExtension",
+            worker_extension_cls="es_lora_nccl_async2.WorkerExtension",
             dtype="float16", 
             enable_prefix_caching=False,
             enforce_eager=False,
@@ -368,7 +399,6 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
     ]
     return engines, pgs
 
-
 def main(args: Args):
     # --- Setup/Init ---
     args.num_gpus = torch.cuda.device_count()
@@ -376,13 +406,13 @@ def main(args: Args):
     assert args.population_size % 2 ==0, f"{args.population_size=} must be even for antithetic sampling."
     assert args.population_size % args.num_engines == 0, f"{args.population_size=} must be divisible by {args.num_engines=}."
     loras_per_engine = args.population_size // args.num_engines
+
     if args.samples_per_prompt > 1:
         assert args.temperature > 0.0, f"{args.samples_per_prompt=} requires {args.temperature=} > 0.0."
     if args.pass_at_k:
         assert args.samples_per_prompt > 1, f"{args.samples_per_prompt=} but {args.pass_at_k}"
-    assert args.task in ["zeros", "gsm8k", "gsm8k-boxed", "countdown"], f"Unknown task: {args.task}"
     
-    print("--- Arguments ---")
+    print("\n--- Arguments ---")
     for k, v in vars(args).items(): print(f"  {k}: {v}")
     print(f"Detected {args.num_gpus} GPUs. Launching {args.num_engines} vLLM engines.")
     print("-----------------\n")
@@ -410,11 +440,12 @@ def main(args: Args):
 
     # --- WandB Setup ---
     run_name = f"{args.name_prefix}-" if args.name_prefix != "" else ""
-    run_name += f"{args.task}-"
+    run_name += f"{args.task.replace(':', '_')}-"
     run_name += f"{args.model_name.split('/')[-1]}-"
     run_name += f"P{args.population_size}-"
     run_name += f"B{args.prompt_batch_size}-"
     run_name += f"S{args.samples_per_prompt}-"
+    run_name += f"D{args.sub_dataset_size}-" if args.sub_dataset_size is not None else ""
     run_name += f"std-" if args.normalize_with_std else "no_std-"
     run_name += f"l{args.max_tokens}-"
     run_name += f"n{args.steps_per_adapter}-"
@@ -465,15 +496,13 @@ def main(args: Args):
     if torch.cuda.is_available(): torch.cuda.empty_cache()
     print("Base Checkpoint ready.")
 
-    # Task
+    # Task Factory
     if args.task == "zeros":
-        from tasks import ZerosTask
         task = ZerosTask(
             batch_size=args.prompt_batch_size,
             max_tokens=args.max_tokens
         )
     elif args.task == "gsm8k":
-        from tasks import MathTask
         task = MathTask(
             batch_size=args.prompt_batch_size,
             dataset_name="openai/gsm8k",
@@ -482,7 +511,6 @@ def main(args: Args):
             answer_format="none"
         )
     elif args.task == "gsm8k-boxed":
-        from tasks import MathTask
         task = MathTask(
             batch_size=args.prompt_batch_size,
             dataset_name="openai/gsm8k",
@@ -491,14 +519,63 @@ def main(args: Args):
             answer_format="boxed"
         )
     elif args.task == "countdown":
-        from tasks import CountdownTask
         task = CountdownTask(
             batch_size=args.prompt_batch_size,
             datset_size=args.sub_dataset_size,
             end_token=None
         )
+    elif args.task.startswith("math2:"):
+        dataset_name = args.task.split("math2:")[1]
+        task = MathTask2(
+            batch_size=args.prompt_batch_size,
+            # tokenizer=tokenizer,
+            dataset_name=dataset_name,
+            datset_size=args.sub_dataset_size,
+            apply_chat_template=False,
+        )
+    elif args.task == "random":
+        task = RandomTask(
+            batch_size=args.prompt_batch_size,
+            max_tokens=args.max_tokens,
+            answer_format="none",
+            max_random_number=args.samples_per_prompt,
+        )
+    elif args.task == "random-boxed":
+        task = RandomTask(
+            batch_size=args.prompt_batch_size,
+            max_tokens=args.max_tokens,
+            answer_format="boxed",
+            max_random_number=args.samples_per_prompt,
+        )
     else:
         raise ValueError(f"Unknown task: {args.task}")
+    
+    sampling_params = SamplingParams(
+        temperature=args.temperature,
+        seed=args.base_seed,
+        max_tokens=args.max_tokens,
+        n=args.samples_per_prompt,
+        stop=[tokenizer.eos_token],
+    )
+    do_eval = False
+    if "math2:" in args.task and args.steps_per_eval > 0:
+        do_eval = True
+        print("--- Configuring Evaluation Tasks ---")
+        eval_sampling_params = SamplingParams(
+            temperature=0.0,
+            seed=args.base_seed + 12345,
+            max_tokens=args.max_tokens,
+            n=1,
+            stop=[tokenizer.eos_token],
+        )
+        eval_task = MathTask2(
+            batch_size=args.eval_batch_size,
+            # tokenizer=tokenizer,
+            dataset_name="math-eval",
+            datset_size=None,
+            apply_chat_template=task.apply_chat_template,
+        )
+        print(f"Training on {args.task}, evaluating on {eval_task.split_names}.")
 
     # Launch engines
     engines, pgs = launch_engines(args.num_engines, base_model_path, args.population_size, args.lora_r)
@@ -516,53 +593,76 @@ def main(args: Args):
     ])
     print("NCCL group initialized.")
 
-
-    def cleanup():
-        print("\nCleaning up Ray resources, adapter files, and WandB...")
-        for llm in engines:
-            try: ray.kill(llm) 
-            except Exception: pass
-        print("Ray actors killed.")
-        for pg in pgs:
-            try: remove_placement_group(pg)
-            except Exception: pass
-        print("Placement groups removed.")
-        ray.shutdown()
-        print("Ray shutdown complete.")
-        if args.use_wandb: wandb.finish()
-        print("WandB finished.")
-        if os.path.exists(LORA_POPULATION_PATH): shutil.rmtree(LORA_POPULATION_PATH)
-        print("Adapter files removed.")
-        print("Cleanup complete.\n")
-
     def sig_handler(sig, frame):
-        # cleanup()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, sig_handler)
     signal.signal(signal.SIGTERM, sig_handler)
 
     print("\n--- Starting ASYNCHRONOUS ES Training Loop ---")
-    
-    # Store LoRARequest objects
+
     lora_paths = [
         os.path.join(LORA_POPULATION_PATH, f"pop_{pop_idx}") for pop_idx in range(args.population_size)
     ]
     lora_int_id = 1
-
-    sampling_params = SamplingParams(
-        temperature=args.temperature,
-        seed=args.base_seed,
-        max_tokens=args.max_tokens,
-        n=args.samples_per_prompt,
-        stop=[tokenizer.eos_token],
-    )
-
     total_time = time.time()
-    
+
     for es_step in range(args.num_iterations):
         print(f"\n\n======= ES Step {es_step} / {args.num_iterations} =======")
         total_iter_start = time.time()
+
+        # --- EVALUATION LOOP (Before training step or periodically) ---
+        eval_info_dict_all = {}
+        if args.steps_per_eval > 0 and es_step % args.steps_per_eval == 0 and do_eval:
+            print(f"\n--- Running Evaluation at Step {es_step} ---")
+            # 2. Evaluate Population
+            eval_start = time.time()
+            prompts, answers = eval_task.get_eval_batch()
+            assert len(prompts) % args.num_engines == 0, f"{len(prompts)=} must be divisible by {args.num_engines=}"
+            eval_requests_per_engine = len(prompts) // args.num_engines
+            task_ref = ray.put(eval_task)
+            answers_ref = ray.put(answers)
+            all_refs = []
+
+            for engine_idx in range(args.num_engines):
+                llm = engines[engine_idx]
+                engine_prompts = prompts[
+                    engine_idx * eval_requests_per_engine : (engine_idx + 1) * eval_requests_per_engine
+                ]
+
+                # Launch the remote task (non-blocking)
+                ref = llm.generate_and_score.remote(
+                    engine_prompts, 
+                    eval_sampling_params, 
+                    lora_requests=None,
+                    task_obj=task_ref,
+                    answers=answers_ref
+                )
+                all_refs.append(ref)
+            # GATHER: Wait for ALL evaluations to complete (single blocking call)
+            if args.verbose: print(f"EVAL: Waiting for {len(all_refs)} asynchronous evaluations to complete...")
+            results = ray.get(all_refs)
+            list_of_fitness_arrays = []
+            for i, res in enumerate(results):
+                (eng_fitness, info_dict, eng_sample_output) = res
+                # Reshape flat lists to (Loras_per_engine, Prompts, Samples)
+                eng_fitness_np = np.array(eng_fitness)
+                list_of_fitness_arrays.append(eng_fitness_np)
+                if i == 0:
+                    eval_info_dict_all = {k: [] for k in info_dict.keys()}
+                for k, v in info_dict.items():
+                    eval_info_dict_all[k].append(v)
+            eval_info_dict_all = {f"eval/{k}": np.mean(v) for k, v in eval_info_dict_all.items()}
+            eval_task_names = eval_task.split_names
+            all_fitnesses_shaped = np.concatenate(list_of_fitness_arrays, axis=0).reshape(len(eval_task_names), eval_task.batch_size)
+            print(f"\n--------------------------------")
+            for eval_task_name, fitness_array in zip(eval_task_names, all_fitnesses_shaped):
+                mean_fitness = np.mean(fitness_array)
+                eval_info_dict_all[f"eval/{eval_task_name}_mean_fitness"] = mean_fitness
+                print(f"EVAL {eval_task_name}: Mean fitness: {mean_fitness:.4f}")
+            print(f"--------------------------------\n")
+            eval_time = time.time() - eval_start
+            if args.verbose: print(f"EVAL complete in {eval_time:.4f}s")
 
         # 1. Create and save population of noisy LoRA adapters
         if es_step % args.steps_per_adapter == 0:
@@ -576,7 +676,6 @@ def main(args: Args):
         else:
             lora_gen_time = 0.0
 
-        # Prepare LoRARequest objects for the entire population
         lora_requests = []
         for pop_idx, lora_path in enumerate(lora_paths):
             lora_requests.append(
@@ -586,138 +685,64 @@ def main(args: Args):
                     lora_path=lora_path
                 )
             )
-            lora_int_id += 1  # Increment to ensure unique IDs across steps
+            lora_int_id += 1
 
-        # 2. Evaluate Population (ASYNCHRONOUS SCATTER/GATHER)
-        # SCATTER: Launch all tasks asynchronously and collect references
+        # 2. Evaluate Population
         vllm_start = time.time()
-        all_refs = []
         prompts, answers = task.get_batch()
-        for engine_idx in range(args.num_engines):
-            llm = engines[engine_idx]
-            engine_lora_requests = lora_requests[
-                engine_idx * loras_per_engine : (engine_idx + 1) * loras_per_engine]
-
-            # Launch the remote task (non-blocking)
-            repeated_engine_lora_requests = []
-            repeated_prompts = []
-            for lora_request in engine_lora_requests:
-                repeated_engine_lora_requests.extend([lora_request] * len(prompts))
-                repeated_prompts.extend(prompts)
-            assert len(repeated_prompts) == len(repeated_engine_lora_requests), f"{len(repeated_prompts)=} != {len(repeated_engine_lora_requests)=}"
-
-            ref = llm.generate.remote(
-                repeated_prompts, 
-                sampling_params, 
-                lora_request=repeated_engine_lora_requests,
-                use_tqdm=True,
-            )
-            # Store the reference and its original index
-            all_refs.append((engine_idx, ref))
-
-        # GATHER: Wait for ALL evaluations to complete (single blocking call)
-        if args.verbose: print(f"Waiting for {len(all_refs)} asynchronous evaluations to complete...")
-        vllm_time = time.time() - vllm_start
-        if args.verbose: print(f"vLLM evals complete in {vllm_time:.4f}s")
+        repeated_lora_requests = []
+        repeated_prompts = []
+        for lora_request in lora_requests:
+            repeated_lora_requests.extend([lora_request] * len(prompts))
+            repeated_prompts.extend(prompts)
+        requests_per_engine = loras_per_engine * len(prompts)
+        assert requests_per_engine == len(repeated_prompts) // args.num_engines
         
-        if args.verbose: print("Parsing vLLM outputs and calculating fitness in parallel...")
-        fitness_start = time.time()
-        
-        # Put the task and answers in the object store once for all workers to read
         task_ref = ray.put(task)
         answers_ref = ray.put(answers)
+        all_refs = []
 
-        fitness_processing_tasks = []
-        engine_indices = [] # To keep track of the order
+        for engine_idx in range(args.num_engines):
+            llm = engines[engine_idx]
+            engine_lora_requests = repeated_lora_requests[
+                engine_idx * requests_per_engine : (engine_idx + 1) * requests_per_engine
+            ]
+            engine_prompts = repeated_prompts[
+                engine_idx * requests_per_engine : (engine_idx + 1) * requests_per_engine
+            ]
 
-        # Launch parallel processing tasks, passing object references (futures)
-        # We are NOT pulling the large string data to this driver script.
-        for engine_idx, ref in all_refs:
-            engine_lora_count = loras_per_engine # This assumes equal split, which your code does
-            
-            fitness_processing_tasks.append(
-                process_engine_outputs_and_calc_fitness.remote(
-                    ref, 
-                    task_ref, 
-                    answers_ref, 
-                    engine_lora_count, 
-                    len(prompts), 
-                    args.samples_per_prompt
-                )
+            # Launch the remote task (non-blocking)
+            ref = llm.generate_and_score.remote(
+                engine_prompts, 
+                sampling_params, 
+                lora_requests=engine_lora_requests,
+                task_obj=task_ref,
+                answers=answers_ref
             )
-            engine_indices.append(engine_idx)
-
-        # Now, gather the results. This is only lists of small floats.
-        # This is memory-efficient.
-        fitness_processing_outputs = ray.get(fitness_processing_tasks)
+            all_refs.append(ref)
+        # GATHER: Wait for ALL evaluations to complete (single blocking call)
+        if args.verbose: print(f"Waiting for {len(all_refs)} asynchronous evaluations to complete...")
+        results = ray.get(all_refs)
+        vllm_time = time.time() - vllm_start
+        if args.verbose: print(f"vLLM evals + fitness calc complete in {vllm_time:.4f}s")
+        
+        aggregation_start = time.time()
         list_of_fitness_arrays = []
-        total_responses = 0
-        num_truncated = 0
-        list_of_num_distinct_model_answers = []
-        for fitness_array, responses, truncated, num_distinct_model_answers_array in fitness_processing_outputs:
-            list_of_fitness_arrays.append(fitness_array)
-            total_responses += responses
-            num_truncated += truncated
-            list_of_num_distinct_model_answers.append(num_distinct_model_answers_array)
-        assert total_responses == args.population_size * args.prompt_batch_size * args.samples_per_prompt, \
-            f"Got {total_responses=}, expected {args.population_size=}*{args.prompt_batch_size=}*{args.samples_per_prompt=}"
-        prop_truncated = num_truncated / total_responses
-        
-        # We need to re-sort the arrays in case ray.get returns them out of order
-        # (though it usually preserves it)
-        sorted_fitness_arrays = [
-            arr for _, arr in sorted(zip(engine_indices, list_of_fitness_arrays))
-        ]
-        sorted_num_distinct_model_answers = [
-            arr for _, arr in sorted(zip(engine_indices, list_of_num_distinct_model_answers))
-        ]
-
-        # Concatenate the results from all engines into one big array
-        all_fitnesses_shaped = np.concatenate(sorted_fitness_arrays, axis=0)
-        all_num_distinct_model_answers = np.concatenate(sorted_num_distinct_model_answers, axis=0)
-        
-        # Verify the final shape
-        expected_shape = (args.population_size, len(prompts), args.samples_per_prompt)
-        assert all_fitnesses_shaped.shape == expected_shape, \
-            f"Fitness array shape mismatch! Got {all_fitnesses_shaped.shape}, expected {expected_shape}"
-        expected_shape2 = (args.population_size, len(prompts))
-        assert all_num_distinct_model_answers.shape == expected_shape2, \
-            f"Num distinct model answers array shape mismatch! Got {all_num_distinct_model_answers.shape}, expected {expected_shape2}"
-        num_distinct_model_answers_mean = float(np.mean(all_num_distinct_model_answers))
-        
-        fitness_time = time.time() - fitness_start
-        if args.verbose: print(f"Fitness calculation complete in {fitness_time:.4f}s")
-
-        engine_0_prompts = []
-        engine_0_responses = []
-        if args.verbose:
-            print("Gathering sample outputs from Engine 0 for logging...")
-            try:
-                # Get data from *only* the first engine (index 0)
-                # all_refs is a list of (engine_idx, ref) tuples
-                first_engine_ref = all_refs[0][1] 
-                engine_0_outputs = ray.get(first_engine_ref) # Safe, just one engine's data
-                
-                engine_lora_count = loras_per_engine
-                num_prompts_for_parsing = len(prompts) # from the main script scope
-                
-                # Pre-allocate lists for this engine's data
-                engine_0_prompts = [["" for _ in range(num_prompts_for_parsing)] for _ in range(engine_lora_count)]
-                engine_0_responses = [[[] for _ in range(num_prompts_for_parsing)] for _ in range(engine_lora_count)]
-
-                for i, output in enumerate(engine_0_outputs):
-                    pop_idx_local = i // num_prompts_for_parsing  # LoRA index relative to this engine
-                    prompt_idx = i % num_prompts_for_parsing
-                    
-                    if pop_idx_local < engine_lora_count and prompt_idx < num_prompts_for_parsing:
-                         engine_0_prompts[pop_idx_local][prompt_idx] = output.prompt
-                         engine_0_responses[pop_idx_local][prompt_idx] = [o.text for o in output.outputs]
-                    
-            except Exception as e:
-                print(f"Warning: Failed to gather log data from engine 0. {e}")
-                # Clear them so we don't try to print later
-                engine_0_prompts = []
-                engine_0_responses = []
+        for i, res in enumerate(results):
+            (eng_fitness, info_dict, eng_sample_output) = res
+            # Reshape flat lists to (Loras_per_engine, Prompts, Samples)
+            eng_fitness_np = np.array(eng_fitness).reshape(loras_per_engine, len(prompts), args.samples_per_prompt)
+            list_of_fitness_arrays.append(eng_fitness_np)
+            if i == 0:
+                info_dict_all = {k: [] for k in info_dict.keys()}
+            for k, v in info_dict.items():
+                info_dict_all[k].append(v)
+        info_dict_all = {k: np.mean(v) for k, v in info_dict_all.items()}
+        all_fitnesses_shaped = np.concatenate(list_of_fitness_arrays, axis=0)
+        assert all_fitnesses_shaped.shape == (args.population_size, len(prompts), args.samples_per_prompt), \
+            f"Fitness array shape mismatch! Got {all_fitnesses_shaped.shape}, expected {(args.population_size, len(prompts), args.samples_per_prompt)}"
+        aggregation_time = time.time() - aggregation_start
+        if args.verbose: print(f"Results aggregation complete in {aggregation_time:.4f}s")
 
         # all_fitnesses_shaped: Shape (population_size, num_prompts, samples_per_prompt)
         if args.pass_at_k:
@@ -733,40 +758,22 @@ def main(args: Args):
 
         # Logging
         if args.verbose:
-            num_pops_to_print = min(4, args.population_size)
-            num_qs_to_print = min(2, len(prompts))
-            num_responses_to_print = min(2, args.samples_per_prompt)
-            
-            # Check if we successfully gathered log data
-            has_log_data = len(engine_0_prompts) > 0 and len(engine_0_responses) > 0
-
-            for pop_idx in range(num_pops_to_print):
+            for pop_idx in range(2):
                 print(f"\n----POP {pop_idx}:")
-                
-                # Check if this pop_idx is one we have log data for (i.e., from engine 0)
-                if has_log_data and pop_idx < len(engine_0_prompts):
-                    for q_idx in range(num_qs_to_print):
-                        # Ensure we don't go out of bounds if prompt count changed (shouldn't happen)
-                        if q_idx < len(engine_0_prompts[pop_idx]):
-                            print(f"PROMPT {q_idx}: {engine_0_prompts[pop_idx][q_idx]}")
-                            print(f"RESPONSES: {engine_0_responses[pop_idx][q_idx][:num_responses_to_print]}")
-                            print(f"FITNESSES: {[x.item() for x in all_fitnesses_shaped[pop_idx][q_idx]]}")
-                        
-                # Always print the summary fitness, which we have for everyone
-                print(f"FITNESS: {fitness_per_pop[pop_idx]:.4f}, NORMALIZED FITNESS: {normalized_fitnesses[pop_idx]:.4f}")
-
-            print(f"Fitness per prompt (averaged over population): {fitness_per_prompt}")
-        
+                generations_for_logging = results[0][2]
+                for text in generations_for_logging:
+                    print(text)
+                print(f"----FITNESS: {fitness_per_pop[pop_idx]:.4f}, NORMALIZED FITNESS: {normalized_fitnesses[pop_idx]:.4f}\n")
+            print(f"\nFitness per prompt (averaged over population): {fitness_per_prompt}")
         mean_fitness = float(np.mean(fitnesses_shaped))
         min_fitness = float(np.min(fitnesses_shaped))
         max_fitness = float(np.max(fitnesses_shaped))
         std_normalized_fitness = float(normalized_fitnesses_std)
         pass_at_k_fitness = float(np.mean(np.max(all_fitnesses_shaped, axis=2)))
         std_in_samples = float(np.std(all_fitnesses_shaped, axis=2).mean()) if args.samples_per_prompt > 1 else 0.0
-        current_time = time.time()
-        print(f"Mean fitness: {mean_fitness:.4f}, min: {min_fitness:.4f}, max: {max_fitness:.4f}, std_normalized_fitness: {std_normalized_fitness:.4f}, pass@k fitness: {pass_at_k_fitness:.4f}, std_in_samples: {std_in_samples:.4f}, prop_truncated: {prop_truncated:.4f}, num_distinct_model_answers_mean: {num_distinct_model_answers_mean:.4f}")
-        fitnesses_so_far.append(mean_fitness)
-        print(f"\n---\nFitnesses so far: {fitnesses_so_far}\n---\n")
+        print(f"Mean fitness: {mean_fitness:.4f}, min: {min_fitness:.4f}, max: {max_fitness:.4f}, std_normalized_fitness: {std_normalized_fitness:.4f}, pass@k fitness: {pass_at_k_fitness:.4f}, std_in_samples: {std_in_samples:.4f}, distinct_answers: {info_dict_all.get('mean_distinct_counts', -1.0):.4f}, prop_truncated: {info_dict_all.get('prop_truncated', -1.0):.4f}")
+        for k, v in info_dict_all.items():
+            print(f"  {k}: {v:.4f}")
 
         # Compute ES update ONLY on engine 0
         update_start = time.time()
@@ -775,22 +782,17 @@ def main(args: Args):
             args=(normalized_fitnesses, peft_shapes_dict, es_step, args)
         ))
         update_time = time.time() - update_start
-
         if args.verbose: print(f"Applied ES update on Engine 0 in {update_time:.4f}s")
-        if args.use_wandb: wandb.log({"time/update_application": update_time, "es_step": es_step})
 
-        # 4. Broadcast updated weights from engine 0 to all engines (NCCL)
+        # 4. Broadcast updated weights
         broadcast_start = time.time()
         ray.get([e.collective_rpc.remote("broadcast_all_weights", args=(0,)) for e in engines])
         broadcast_time = time.time() - broadcast_start
         if args.verbose: print(f"Broadcasted updated weights to all engines in {broadcast_time:.4f}s (NCCL sync)")
-        if args.use_wandb: wandb.log({"time/broadcast": broadcast_time, "es_step": es_step})
 
+        # 5. Logging and WandB
         total_iter_end = time.time()
         iter_time = total_iter_end - total_iter_start
-        
-        if args.use_wandb: wandb.log({"time_per_es_step": iter_time, "es_step": es_step})
-
         if args.use_wandb:
             wandb.log({
                 "mean_fitness": mean_fitness,
@@ -799,29 +801,28 @@ def main(args: Args):
                 "std_normalized_fitness": std_normalized_fitness,
                 "pass_at_k_fitness": pass_at_k_fitness,
                 "std_in_samples": std_in_samples,
-                "prop_truncated": prop_truncated,
                 "es_step": es_step,
                 "pop_step": es_step // args.steps_per_adapter,
                 "time/vllm": vllm_time,
-                "time/fitness": fitness_time,
+                "time/aggregation": aggregation_time,
                 "time/lora_gen": lora_gen_time,
                 "time/update": update_time,
                 "time/broadcast": broadcast_time,
                 "time/iteration": iter_time,
-                "total_time": current_time - total_time,
-                "num_distinct_model_answers_mean": num_distinct_model_answers_mean,
+                "total_time": time.time() - total_time,
+                **info_dict_all,
+                **eval_info_dict_all,
             })
-        
         if args.verbose:
-            total_time2 = vllm_time + fitness_time + lora_gen_time + update_time + broadcast_time
-            print(f"TIMES: total: {iter_time:.4f}s (or {total_time2}s),  LoRA gen: {lora_gen_time:.4f}s, vLLM: {vllm_time:.4f}s, fitness: {fitness_time:.4f}s, ES update: {update_time:.4f}s, broadcast: {broadcast_time:.4f}s")
+            total_time2 = vllm_time + aggregation_time + lora_gen_time + update_time + broadcast_time
+            print(f"TIMES: total: {iter_time:.4f}s (or {total_time2}s),  LoRA gen: {lora_gen_time:.4f}s, vLLM+Score: {vllm_time:.4f}s, Aggregation: {aggregation_time:.4f}s, ES update: {update_time:.4f}s, broadcast: {broadcast_time:.4f}s")
+
+        fitnesses_so_far.append(mean_fitness)
+        print(f"\n---\nFitnesses so far: {fitnesses_so_far}\n---\n")
         print(f"======= ES Step {es_step} finished =======\n")
 
     print("\n--- ES Training Complete ---")
-    # cleanup()
-
 
 if __name__ == "__main__":
-    # Ensure WorkerExtension is defined before main execution
     args = tyro.cli(Args)
     main(args)
