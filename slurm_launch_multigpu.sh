@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#SBATCH --job-name=es_lora_nccl_multigpu
-#SBATCH --gpus=4                  # Request 4 GPUs (adjust as needed: 2, 4, 8, etc.)
-#SBATCH --time=24:00:00           # Time limit hrs:min:sec
-#SBATCH --output=/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/logs/multigpu-%j.log    # Log file path (%j is job ID)
-#SBATCH --cpus-per-task=16        # Ensure enough CPUs for Ray actors (4 CPUs per GPU is a good rule)
+#SBATCH --job-name=eggroll_vllm
+#SBATCH --gpus=4
+#SBATCH --time=24:00:00
+#SBATCH --output=/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/logs/multigpu-%j.log
+#SBATCH --cpus-per-task=16
 
 # --- Create logs directory if it doesn't exist ---
 LOG_DIR="$HOME/Documents/esvllm-outer/hyperscale-es-vllm/logs"

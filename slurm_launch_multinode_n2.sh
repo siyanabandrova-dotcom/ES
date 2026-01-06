@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=geme_es_multinode
+#SBATCH --job-name=eggroll_vllm
 #SBATCH --nodes=2
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
