@@ -1,9 +1,7 @@
 import re
 import numpy as np
-from datasets import load_dataset, Dataset
-from typing import List, Optional, Dict, Any
-import gem
-from gem.utils.parsing import extract_last_boxed_answer
+from datasets import load_dataset
+from typing import List, Optional
 
 def extract_model_answer(text, ans_format="none"):
         regex_pattern = "(-?[$0-9.,]{2,})|(-?[0-9]+)"
@@ -202,7 +200,8 @@ class MathTask2:
         examples = []
         for split in self.split_names:
             split_dataset = self.dataset[split]
-            examples.extend([split_dataset[i] for i in indices])
+            split_length = len(split_dataset)
+            examples.extend([split_dataset[i % split_length] for i in indices])
         return self._format_examples(examples)
     
     def get_fitness(self, generation, gt_answer):
