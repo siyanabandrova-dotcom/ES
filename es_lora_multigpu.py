@@ -309,8 +309,8 @@ class ESNcclLLM(LLM):
         
         num_prompts = len(answers)
         
-        # We process linearly.
-        pop_responses_buffer = "" # Renamed for clarity
+        # Process linearly.
+        pop_responses_buffer = ""
 
         for i, output in enumerate(request_outputs):
             prompt_idx = i % num_prompts

@@ -19,36 +19,20 @@ from dataclasses import dataclass
 import copy
 import math
 
-print("IMPORTS: Standard library imports done", flush=True)
-
 import numpy as np
 import ray
 from ray.util.placement_group import placement_group, remove_placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-
-print("IMPORTS: Ray imports done", flush=True)
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
-print("IMPORTS: PyTorch and Transformers done", flush=True)
-
 from vllm import LLM, SamplingParams
 from vllm.utils import get_ip, get_open_port
 import tyro
-
-print("IMPORTS: vLLM and tyro done", flush=True)
-
 import wandb
 import weave
-
-print("IMPORTS: wandb and weave done", flush=True)
-
 from peft import LoraConfig, get_peft_model
 from vllm.lora.request import LoRARequest
 from safetensors.torch import save_file
-
-print("IMPORTS: PEFT and safetensors done", flush=True)
 
 from tasks import MathTask, CountdownTask, ZerosTask, MathTask2, RandomTask
 
@@ -70,7 +54,7 @@ class Args:
     max_tokens: int = 1024
     temperature: float = 0.0
     samples_per_prompt: int = 1
-    task: str = "zeros"  # Options: "zeros", "gsm8k", "gsm8k-boxed"
+    task: str = "zeros"  # Options: "zeros", "gsm8k", "gsm8k-boxed", ...
     prompt_batch_size: int = 2
     pass_at_k: bool = False
     normalize_with_std: bool = False
@@ -93,7 +77,7 @@ class Args:
 
     # --- WandB ---
     use_wandb: bool = False
-    wandb_project: str = "hyperscalees-vllm"
+    wandb_project: str = "hyperscalees-vllm-multinode"
     name_prefix: str = f"debug"
 
     def __post_init__(self):
@@ -189,9 +173,6 @@ def get_rng_noise(
                     generator=torch_rng,
                 ) for shape in shapes)
     return noise_a, noise_b
-
-# [REMOVED] create_lora_adapter_files
-# Logic moved to ESNcclLLM.generate_local_adapters to run on workers
 
 class WorkerExtension:
     """
@@ -300,7 +281,7 @@ class WorkerExtension:
 
     @torch.no_grad()
     def broadcast_all_weights(self, src_rank: int):
-        # NOTE: NCCL broadcast is a COLLECTIVE operation - ALL ranks must participate,
+        # NOTE: ALL ranks must participate in NCCL broadcast,
         # including the source rank. The source sends, others receive.
 
         print(f"WORKER {self.gpu_rank}: broadcast_all_weights called, src_rank={src_rank}", flush=True)
@@ -405,13 +386,7 @@ class ESNcclLLM(LLM):
                 lora_a_name_raw = peft_name.replace("base_layer.weight", "lora_A.default.weight")
                 lora_b_name_raw = peft_name.replace("base_layer.weight", "lora_B.default.weight")
 
-                # Sanitize keys for vLLM:
-                # 1. PEFT uses "base_model.model.model.*" but vLLM expects "base_model.model.*"
                 # 2. PEFT uses ".lora_A.default.weight" but vLLM expects ".lora_A.weight"
-                # lora_a_name = lora_a_name_raw.replace("base_model.model.model.", "base_model.model.")
-                # lora_a_name = lora_a_name.replace(".lora_A.default.weight", ".lora_A.weight")
-                # lora_b_name = lora_b_name_raw.replace("base_model.model.model.", "base_model.model.")
-                # lora_b_name = lora_b_name.replace(".lora_B.default.weight", ".lora_B.weight")
                 lora_a_name = lora_a_name_raw.replace(".lora_A.default.weight", ".lora_A.weight")
                 lora_b_name = lora_b_name_raw.replace(".lora_B.default.weight", ".lora_B.weight")
 
@@ -434,11 +409,11 @@ class ESNcclLLM(LLM):
                 noise_b *= math.sqrt(args.sigma)
                 noise_a *= math.sqrt(args.sigma)
 
-                # Zero out the weights (LoRA A is randomly initialized by PEFT, but we want to start from zero)
+                # Zero out the weights (before then setting them to noise)
                 lora_a.zero_()
                 lora_b.zero_()
 
-                # Antithetic sampling logic
+                # Antithetic sampling
                 lora_a.add_(noise_a)
                 if pop_idx % 2 == 1:
                     lora_b.add_(-noise_b)
@@ -501,8 +476,8 @@ class ESNcclLLM(LLM):
         
         num_prompts = len(answers)
         
-        # We process linearly.
-        pop_responses_buffer = "" # Renamed for clarity
+        # Process linearly.
+        pop_responses_buffer = ""
 
         for i, output in enumerate(request_outputs):
             prompt_idx = i % num_prompts
@@ -597,7 +572,7 @@ def main(args: Args):
     sys.stdout.flush()
 
     # --- 1. Initialize Ray FIRST (Connect to the cluster created by Slurm) ---
-    # We must do this before counting GPUs, otherwise we only see local GPUs.
+    # Do this before counting GPUs, otherwise only see local GPUs.
     print("MAIN: Connecting to Ray Cluster...", flush=True)
     # address="auto" picks up the RAY_ADDRESS env var set by your bash script
     ray.init(address="auto", include_dashboard=False, ignore_reinit_error=True)
@@ -638,13 +613,9 @@ def main(args: Args):
     random.seed(args.base_seed)
     np.random.seed(args.base_seed)
     torch.manual_seed(args.base_seed)
-    # if torch.cuda.is_available():
-    #     torch.cuda.manual_seed_all(args.base_seed)
-    
-    # os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(args.num_gpus))
     
     # --- Setup output directories ---
-    # NOTE: LORA_POPULATION_PATH is now handled locally on each node by the workers.
+    # NOTE: LORA_POPULATION_PATH is handled locally on each node by the workers.
 
     # --- WandB Setup ---
     run_name = f"{args.name_prefix}-" if args.name_prefix != "" else ""
@@ -693,7 +664,7 @@ def main(args: Args):
     )
 
     # Load on CPU solely to extract PEFT shapes and config for the Head Node's logic.
-    # We do NOT save this to disk for the workers; they will load 'args.model_name' directly.
+    # Do NOT save this to disk for the workers; workers load 'args.model_name' directly.
     print("MAIN: Loading base model to CPU for structure extraction...", flush=True)
     sys.stdout.flush()
     base_model_pure_hf_host = AutoModelForCausalLM.from_pretrained(
@@ -826,7 +797,7 @@ def main(args: Args):
     
     # 1. Ask Engine 0 (Rank 0) for its IP and a free port.
     #    collective_rpc returns a list of results (one per TP worker). 
-    #    Since TP=1, we take the first element [0].
+    #    Since TP=1, take the first element [0].
     master_info = ray.get(engines[0].collective_rpc.remote("get_transport_info", args=()))[0]
     master_address, master_port = master_info
     print(f"Rank 0 determined Master Address: {master_address}, Port: {master_port}")
@@ -846,7 +817,7 @@ def main(args: Args):
 
     # --- Setup Local LoRA Generation on Workers ---
     print("Broadcasting initial LoRA state to workers for local generation...")
-    # We pass the initial state dict, shapes, and config so workers can regenerate adapters locally
+    # Pass the initial state dict, shapes, and config so workers can regenerate adapters locally
     peft_state_dict_ref = ray.put(peft_state_dict)
     peft_shapes_dict_ref = ray.put(peft_shapes_dict)
     lora_config_dict_ref = ray.put(lora_config_dict)
@@ -867,8 +838,7 @@ def main(args: Args):
 
     print("\n--- Starting ASYNCHRONOUS ES Training Loop ---")
 
-    # We map indices to engines. Engine i handles indices [i*batch ... (i+1)*batch]
-    # We create a list of indices lists to send to workers
+    # Map indices to engines. Engine i handles indices [i*batch ... (i+1)*batch]
     engine_pop_indices = []
     for i in range(args.num_engines):
         indices = list(range(i * loras_per_engine, (i + 1) * loras_per_engine))
@@ -942,7 +912,7 @@ def main(args: Args):
             # Parallel call to all engines to generate their specific adapters
             # Each engine returns the list of PATHS it generated locally
             # These paths are valid on the worker node, but maybe not on head node.
-            # We use these paths to construct LoRARequests that are sent BACK to the same worker.
+            # These paths are used to construct LoRARequests that are sent BACK to the same worker.
             engine_paths = ray.get([
                 engines[i].generate_local_adapters.remote(
                     engine_pop_indices[i], es_step, args
@@ -954,9 +924,7 @@ def main(args: Args):
             if args.verbose: print(f"Distributed LoRA adapter generation complete in {lora_gen_time:.4f}s")
         else:
             lora_gen_time = 0.0
-            # If we didn't regenerate, we need to reconstruct paths logic to ensure requests are correct
-            # We assume paths haven't changed if step hasn't changed enough
-            # Important: Use rank-specific paths (each engine has its own /dev/shm directory)
+            # Important: Rank-specific paths (each engine has its own /dev/shm directory)
             engine_paths = []
             for i in range(args.num_engines):
                 paths = [os.path.join(f"{LORA_POPULATION_PATH}_{i}", f"pop_{idx}") for idx in engine_pop_indices[i]]
@@ -965,10 +933,6 @@ def main(args: Args):
         # 2. Evaluate Population
         vllm_start = time.time()
         prompts, answers = task.get_batch()
-        
-        # Prepare requests per engine.
-        # Note: engine_paths[i] contains paths relevant to engine i.
-        # We need to construct requests such that engine i gets requests pointing to engine_paths[i]
         
         task_ref = ray.put(task)
         answers_ref = ray.put(answers)
@@ -979,19 +943,10 @@ def main(args: Args):
             
             # Paths allocated to this engine
             local_paths = engine_paths[engine_idx]
-            
-            # Construct LoRA requests for this engine
-            # Since we iterate sequentially, we need to calculate IDs carefully if we want unique global IDs
-            # though vLLM only cares about uniqueness within a batch usually.
-            # We'll calculate IDs based on pop_idx
-            
-            engine_lora_requests = []
             pop_indices = engine_pop_indices[engine_idx]
             
-            # Expand for batch size (prompts)
-            # Logic: We have N adapters. We have M prompts.
-            # We want to run every adapter on every prompt.
-            # vLLM `generate` list inputs: [prompt1+adapterA, prompt2+adapterA, ..., prompt1+adapterB...]
+            # Expand for batch size (prompts) as have N adapters and M prompts
+            # and want to run every adapter on every prompt.
             
             # Create list of (prompt, lora_req) tuples to keep order aligned
             engine_batch_prompts = []
