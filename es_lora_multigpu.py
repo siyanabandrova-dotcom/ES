@@ -628,7 +628,6 @@ def main(args: Args):
             assert len(prompts) % args.num_engines == 0, f"{len(prompts)=} must be divisible by {args.num_engines=}"
             eval_requests_per_engine = len(prompts) // args.num_engines
             task_ref = ray.put(eval_task)
-            answers_ref = ray.put(answers)
             all_refs = []
 
             for engine_idx in range(args.num_engines):
@@ -636,14 +635,17 @@ def main(args: Args):
                 engine_prompts = prompts[
                     engine_idx * eval_requests_per_engine : (engine_idx + 1) * eval_requests_per_engine
                 ]
+                engine_answers = answers[
+                    engine_idx * eval_requests_per_engine : (engine_idx + 1) * eval_requests_per_engine
+                ]
 
                 # Launch the remote task (non-blocking)
                 ref = llm.generate_and_score.remote(
-                    engine_prompts, 
-                    eval_sampling_params, 
+                    engine_prompts,
+                    eval_sampling_params,
                     lora_requests=None,
                     task_obj=task_ref,
-                    answers=answers_ref
+                    answers=engine_answers
                 )
                 all_refs.append(ref)
             # GATHER: Wait for ALL evaluations to complete (single blocking call)
@@ -652,8 +654,9 @@ def main(args: Args):
             list_of_fitness_arrays = []
             for i, res in enumerate(results):
                 (eng_fitness, info_dict, eng_sample_output) = res
-                # Reshape flat lists to (Loras_per_engine, Prompts, Samples)
-                eng_fitness_np = np.array(eng_fitness)
+                # eng_fitness is a list of lists: [[fit1], [fit2], ...] for n=1 samples
+                # Convert to numpy and squeeze out the sample dimension since eval uses n=1
+                eng_fitness_np = np.array(eng_fitness).squeeze(axis=-1)  # Shape: (num_prompts_per_engine,)
                 list_of_fitness_arrays.append(eng_fitness_np)
                 if i == 0:
                     eval_info_dict_all = {k: [] for k in info_dict.keys()}
@@ -661,7 +664,11 @@ def main(args: Args):
                     eval_info_dict_all[k].append(v)
             eval_info_dict_all = {f"eval/{k}": np.mean(v) for k, v in eval_info_dict_all.items()}
             eval_task_names = eval_task.split_names
-            all_fitnesses_shaped = np.concatenate(list_of_fitness_arrays, axis=0).reshape(len(eval_task_names), eval_task.batch_size)
+            # Concatenate fitness arrays from all engines
+            # Total prompts = batch_size * num_splits, distributed across engines
+            all_fitnesses_flat = np.concatenate(list_of_fitness_arrays, axis=0)  # Shape: (total_prompts,)
+            # Reshape to (num_splits, batch_size) - prompts are ordered by split
+            all_fitnesses_shaped = all_fitnesses_flat.reshape(len(eval_task_names), eval_task.batch_size)
             print(f"\n--------------------------------")
             for eval_task_name, fitness_array in zip(eval_task_names, all_fitnesses_shaped):
                 mean_fitness = np.mean(fitness_array)

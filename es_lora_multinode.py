@@ -865,14 +865,17 @@ def main(args: Args):
                 engine_prompts = prompts[
                     engine_idx * eval_requests_per_engine : (engine_idx + 1) * eval_requests_per_engine
                 ]
+                engine_answers = answers[
+                    engine_idx * eval_requests_per_engine : (engine_idx + 1) * eval_requests_per_engine
+                ]
 
                 # Launch the remote task (non-blocking)
                 ref = llm.generate_and_score.remote(
-                    engine_prompts, 
-                    eval_sampling_params, 
+                    engine_prompts,
+                    eval_sampling_params,
                     lora_requests=None,
                     task_obj=task_ref,
-                    answers=answers_ref
+                    answers=engine_answers
                 )
                 all_refs.append(ref)
             # GATHER: Wait for ALL evaluations to complete (single blocking call)

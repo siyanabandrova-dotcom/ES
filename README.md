@@ -64,7 +64,7 @@ lora_alpha: 1
 steps_per_adapter: 4
 ```
 
-VLLM speeds: input ~= 152 toks/s, output ~= 5k toks/s
+VLLM speeds: input ~= 150-250 toks/s, output ~= 5k-7k toks/s
 
 Iteration part times: total: 545.1316s,  LoRA gen: 1.3563s, vLLM+Score: 501.7295s, Aggregation: 0.0020s, ES update: 17.6253s, broadcast: 0.9900s
 

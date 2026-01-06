@@ -136,6 +136,14 @@ class MathTask2:
         else:
             self.split_names = splits
             self.dataset = load_dataset(dataset_name)
+            # Add gsm8k and asdiv subsets for math-eval
+            if dataset_name == "axon-rl/math-eval":
+                gsm8k_subset = load_dataset("axon-rl/GSM-8k", split="train").select(range(500))
+                self.dataset['gsm8k'] = gsm8k_subset
+                self.split_names.append('gsm8k')
+                asdiv_subset = load_dataset("axon-rl/ASDIV-2k", split="train").select(range(500))
+                self.dataset['asdiv'] = asdiv_subset
+                self.split_names.append('asdiv')
         self.apply_chat_template = apply_chat_template
         self.tokenizer = tokenizer
         self.batch_size = batch_size
@@ -337,94 +345,4 @@ class CountdownTask:
         answer_reward, model_answer = self._answer_reward_function(generation, numbers, target)
         reward = format_reward * 0.1 + answer_reward
         return reward, model_answer
-    
-
-########### FOR GEM TASKS ############
-import gem
-from gem.utils.parsing import extract_last_boxed_answer
-from gem.wrappers.wrapper_factory import get_wrapper_fns
-
-def apply_qwen3_game_template(observation: str) -> str:
-    return (
-        f"<|im_start|>user\nYou are playing language games. Make valid actions to win.\nObservation: {observation}"
-        "\nPlease reason step by step, and put your final answer within \\boxed{}.<|im_end|>\n"
-        "<|im_start|>assistant\n"
-    )
-
-
-def apply_no_template(observation: str) -> str:
-    return observation
-
-
-def apply_qwen3_general_template(question: str) -> str:
-    return (
-        f"<|im_start|>user\nQuestion: {question}"
-        "\nPlease reason step by step, and put your final answer within \\boxed{}.<|im_end|>\n"
-        "<|im_start|>assistant\n"
-    )
-
-
-def apply_code_template(question: str) -> str:
-    return (
-        "You are an expert Python programmer. "
-        "You will be given a question (problem specification) and will generate a correct "
-        "Python program that matches the specification and passes all tests."
-        f"\nQuestion: {question}"
-        "\nPlease reason step by step, and write your code in markdown format, e.g., ```python\n# YOUR CODE HERE\n```."
-    )
-
-
-TEMPLATE_FACTORY = {
-    "qwen3_game": apply_qwen3_game_template,
-    "no": apply_no_template,
-    "qwen3_general": apply_qwen3_general_template,
-    "code": apply_code_template,
-}
-
-INVALID_ACTION = "<｜INVALID_ACTION｜>"
-
-    
-class GEMWrapperTask:
-    def __init__(self, env_id, batch_size, tokenizer, gamma=1.0, max_steps=10, wrappers=None, prompt_template=None, apply_chat_template=None):
-
-        if wrappers is None and prompt_template is None and apply_chat_template is None:
-            if env_id.startswith("math:"):
-                self.wrappers = "concat_chat"
-                self.prompt_template = TEMPLATE_FACTORY["no"]
-                self.apply_chat_template = False
-            elif env_id.startswith("game:"):
-                self.wrappers = "concat"
-                self.prompt_template = TEMPLATE_FACTORY["qwen3_game"]
-                self.apply_chat_template = False
-            elif env_id.startswith("rg:"):
-                self.wrappers = ""
-                self.prompt_template = TEMPLATE_FACTORY["qwen3_general"]
-                self.apply_chat_template = False
-            elif env_id.startswith("code:"):
-                self.wrappers = ""
-                self.prompt_template = TEMPLATE_FACTORY["code"]
-                self.apply_chat_template = True
-
-            if env_id.endswith(":python_tool"):
-                self.wrappers = "python_tool_no_int_reward," + self.wrappers if self.wrappers != "" else "python_tool_no_int_reward"
-                env_id = env_id.split(":python_tool")[0]
-        else:
-            self.wrappers = wrappers
-            self.prompt_template = prompt_template
-            self.apply_chat_template = apply_chat_template
-
-        self.env_id = env_id
-        self.wrapper_fns = get_wrapper_fns(self.wrappers, tokenizer=tokenizer)
-        self.batch_size = batch_size
-        self.tokenizer = tokenizer
-        self.gamma = gamma
-        self.max_steps = max_steps
-        self.idx = 0
-
-    def get_batch(self):
-        """Returns a list of seeds as strings of length batch_size."""
-        seeds = np.arange(self.idx, self.idx + self.batch_size).tolist()
-        self.idx += self.batch_size
-        dummy_answers = ["" for _ in seeds]
-        return seeds, dummy_answers
     
