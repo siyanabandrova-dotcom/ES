@@ -69,7 +69,7 @@ class Args:
     base_seed: int = 0
     sub_dataset_size: int = None
     steps_per_eval: int = 10 # -1 to disable
-    eval_batch_size: int = 16 
+    eval_batch_size: int = 32 
 
     # --- WandB ---
     use_wandb: bool = False
