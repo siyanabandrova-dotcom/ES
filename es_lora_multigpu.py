@@ -386,7 +386,7 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
             model=model_name,
             tensor_parallel_size=1,
             distributed_executor_backend="ray",
-            worker_extension_cls="es_lora_nccl_async2.WorkerExtension",
+            worker_extension_cls="es_lora_nccl_multigpu.WorkerExtension",
             dtype="float16",
             enable_prefix_caching=False,
             enforce_eager=False,

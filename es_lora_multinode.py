@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """ES-LoRA Training with NCCL and async evaluation"""
 
-print("=" * 80, flush=True)
-print("LOADING MODULE: es_lora_nccl_async6.py", flush=True)
-print("=" * 80, flush=True)
-
 import argparse
 from datetime import datetime
 import gc
@@ -553,7 +549,7 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
             model=model_name,
             tensor_parallel_size=1,
             distributed_executor_backend="ray",
-            worker_extension_cls="es_lora_nccl_async6.WorkerExtension",
+            worker_extension_cls="es_lora_multinode.WorkerExtension",
             dtype="float16",
             enable_prefix_caching=False,
             enforce_eager=False,
