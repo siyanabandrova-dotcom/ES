@@ -31,17 +31,18 @@ lora_r=${7}
 task=${8}
 normalize_with_std=${9}
 prompt_batch_size=${10}
-sub_dataset_size=${11}
-name_prefix=${12}
+samples_per_prompt=${11}
+temperature=${12}
+pass_at_k=${13}
+steps_per_eval=${14}
+sub_dataset_size=${15}
+name_prefix=${16}
 
 # Run with:
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh <sigma> <learning_rate> <max_tokens> <model_name> <population_size> <steps_per_adapter> <lora_r> <task> <normalize_with_std> <prompt_batch_size> <sub_dataset_size> <name_prefix>
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh <sigma> <learning_rate> <max_tokens> <model_name> <population_size> <steps_per_adapter> <lora_r> <task> <normalize_with_std> <prompt_batch_size> <samples_per_prompt> <temperature> <pass_at_k> <steps_per_eval> <sub_dataset_size> <name_prefix>
 
 # Example for 2 nodes with 4 GPUs each (population_size=128, 16 per GPU):
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 4096 "Qwen/Qwen3-4B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 "null" "multinode-test6_1"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 1024 "Qwen/Qwen3-0.6B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 "null" "debug-multinode-test6_1"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "zeros" "normalize-with-std" 16 "null" "debug-multinode-test6_1"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 "null" "big6_1"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 4096 "Qwen/Qwen3-4B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "multinode-test6_1"
 
 # --- Echo parameters for logging ---
 echo "Parameters:"
@@ -55,6 +56,10 @@ echo "  lora_r: $lora_r"
 echo "  task: $task"
 echo "  normalize_with_std: $normalize_with_std"
 echo "  prompt_batch_size: $prompt_batch_size"
+echo "  samples_per_prompt: $samples_per_prompt"
+echo "  temperature: $temperature"
+echo "  pass_at_k: $pass_at_k"
+echo "  steps_per_eval: $steps_per_eval"
 echo "  sub_dataset_size: $sub_dataset_size"
 echo "  name_prefix: $name_prefix"
 echo "---------------------------------"
@@ -136,6 +141,10 @@ python es_lora_multinode.py \
     --task $task \
     --${normalize_with_std} \
     --prompt-batch-size $prompt_batch_size \
+    --samples-per-prompt $samples_per_prompt \
+    --temperature $temperature \
+    --${pass_at_k} \
+    --steps-per-eval $steps_per_eval \
     $DATASET_SIZE_CMD \
     --name-prefix $name_prefix \
     --use-wandb

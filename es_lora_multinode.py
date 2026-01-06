@@ -766,7 +766,7 @@ def main(args: Args):
             print(f"Adjusted eval_batch_size from {original_size} to {args.eval_batch_size} to be divisible by {args.num_engines} GPUs")
 
         eval_sampling_params = SamplingParams(
-            temperature=0.0,
+            temperature=args.temperature,
             seed=args.base_seed + 12345,
             max_tokens=args.max_tokens,
             n=1,
