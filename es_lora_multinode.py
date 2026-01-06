@@ -93,7 +93,7 @@ class Args:
 
     # --- WandB ---
     use_wandb: bool = False
-    wandb_project: str = "hyperscalees-vllm-multinode"
+    wandb_project: str = "hyperscalees-vllm"
     name_prefix: str = f"debug"
 
     def __post_init__(self):

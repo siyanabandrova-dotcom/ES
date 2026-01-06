@@ -1,12 +1,12 @@
 #!/bin/bash
 
 #SBATCH --job-name=geme_es_multinode
-#SBATCH --nodes=4                 # <--- CHANGED: Number of nodes to use
-#SBATCH --gpus-per-node=4         # <--- CHANGED: Request GPUs PER NODE
-#SBATCH --time=24:00:00           # Time limit hrs:min:sec
-#SBATCH --output=/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/logs/geme_multinode6_4-%j.log
-#SBATCH --cpus-per-task=16        # Ensure enough CPUs for Ray actors (per task/node)
-#SBATCH --ntasks-per-node=1       # <--- ADDED: One task per node (to manage the Ray daemon)
+#SBATCH --nodes=4
+#SBATCH --gpus-per-node=4
+#SBATCH --time=24:00:00
+#SBATCH --output=/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/logs/multinode_n4-%j.log
+#SBATCH --cpus-per-task=16
+#SBATCH --ntasks-per-node=1
 
 # --- Create logs directory if it doesn't exist ---
 LOG_DIR="$HOME/Documents/esvllm-outer/hyperscale-es-vllm/logs"
@@ -35,13 +35,13 @@ sub_dataset_size=${11}
 name_prefix=${12}
 
 # Run with:
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode6_4.sh <sigma> <learning_rate> <max_tokens> <model_name> <population_size> <steps_per_adapter> <lora_r> <task> <normalize_with_std> <prompt_batch_size> <sub_dataset_size> <name_prefix>
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh <sigma> <learning_rate> <max_tokens> <model_name> <population_size> <steps_per_adapter> <lora_r> <task> <normalize_with_std> <prompt_batch_size> <sub_dataset_size> <name_prefix>
 
 # Example for 2 nodes with 4 GPUs each (population_size=128, 16 per GPU):
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode6_4.sh 0.001 0.001 4096 "Qwen/Qwen3-4B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 "null" "multinode-test6_4"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode6_4.sh 0.001 0.001 1024 "Qwen/Qwen3-0.6B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 "null" "debug-multinode-test6_4"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode6_4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "zeros" "normalize-with-std" 16 "null" "debug-multinode-test6_4"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode6_4.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 "null" "big6_4"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-4B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 "null" "multinode-test6_4"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 1024 "Qwen/Qwen3-0.6B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 "null" "debug-multinode-test6_4"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "zeros" "normalize-with-std" 16 "null" "debug-multinode-test6_4"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 "null" "big6_4"
 
 # --- Echo parameters for logging ---
 echo "Parameters:"
@@ -78,7 +78,6 @@ cd $HOME/Documents/esvllm-outer/hyperscale-es-vllm
 
 # ==========================================
 # === RAY CLUSTER SETUP (MULTI-NODE) ===
-# ==========================================
 echo "Setting up Ray Cluster..."
 
 # 1. Get the list of nodes and the head node
@@ -97,7 +96,6 @@ echo "Ray Head IP: $ip_head"
 
 # 3. Start Ray Head on the primary node
 echo "Starting Ray Head on $head_node..."
-# Note: We use --block in background so the script continues, but Ray stays alive
 srun --nodes=1 --ntasks=1 -w "$head_node" \
     ray start --head --node-ip-address="$head_node_ip" --port=$port \
     --num-cpus="${SLURM_CPUS_PER_TASK}" --num-gpus="${SLURM_GPUS_PER_NODE}" --block &
@@ -127,7 +125,7 @@ python -c "import ray; ray.init(address='auto'); print('Ray Cluster Resources:',
 # --- Run the Python Script (Head Node Only) ---
 echo "Starting Python script..."
 # Note: The python script connects to the Ray cluster we just built
-python es_lora_nccl_async6.py \
+python es_lora_multinode.py \
     --sigma $sigma \
     --learning-rate $learning_rate \
     --max-tokens $max_tokens \
@@ -142,6 +140,18 @@ python es_lora_nccl_async6.py \
     --name-prefix $name_prefix \
     --use-wandb
 
+PYTHON_EXIT_CODE=$?
 echo "---------------------------------"
-echo "Job finished with exit code $?"
+if [ $PYTHON_EXIT_CODE -eq 124 ]; then
+    echo "Job timed out after 3 hours"
+elif [ $PYTHON_EXIT_CODE -ne 0 ]; then
+    echo "Job finished with error code $PYTHON_EXIT_CODE"
+else
+    echo "Job finished successfully"
+fi
 echo "---------------------------------"
+
+# Clean up Ray cluster
+echo "Stopping Ray cluster..."
+ray stop
+echo "Ray cluster stopped"

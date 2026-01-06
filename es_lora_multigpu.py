@@ -3,7 +3,6 @@ from datetime import datetime
 import gc
 import json
 import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import random
 import shutil
 import signal
@@ -27,9 +26,7 @@ from peft import LoraConfig, get_peft_model
 from vllm.lora.request import LoRARequest
 from safetensors.torch import save_file
 
-import gem
-from tasks import MathTask, CountdownTask, ZerosTask, GEMWrapperTask, TEMPLATE_FACTORY
-
+from tasks import MathTask, CountdownTask, ZerosTask, MathTask2, RandomTask
 
 # Default Hyperparameters
 EXPERIMENT_DIR = "/dev/shm/outputs_es_lora"
@@ -46,11 +43,10 @@ class Args:
     max_tokens: int = 1024
     temperature: float = 0.0
     samples_per_prompt: int = 1
-    task: str = "zeros"  # Options: "zeros", "gsm8k", "gsm8k-boxed", "gem:game:GuessTheNumber-v0", "gem:math:Math12K", etc.
+    task: str = "zeros"  # Options: "zeros", "gsm8k", "gsm8k-boxed"
     prompt_batch_size: int = 2
     pass_at_k: bool = False
     normalize_with_std: bool = False
-    gamma: float = 1.0 # For GEM multi-turn tasks
 
     # --- LoRA Config ---
     lora_r: int = 4
@@ -65,12 +61,12 @@ class Args:
     verbose: bool = True
     base_seed: int = 0
     sub_dataset_size: int = None
-    steps_per_eval: int = -1 # -1 to disable
+    steps_per_eval: int = 10 # -1 to disable
     eval_batch_size: int = 16 # Number of episodes/problems to run during eval
 
     # --- WandB ---
-    use_wandb: bool = True
-    wandb_project: str = "hyperscalees-vllm-nccl"
+    use_wandb: bool = False
+    wandb_project: str = "hyperscalees-vllm"
     name_prefix: str = f"debug"
 
 
@@ -295,18 +291,11 @@ class ESNcclLLM(LLM):
         """
         Generates responses AND calculates fitness/stats on the GPU worker.
         """
-        if isinstance(task_obj, GEMWrapperTask):
-            return self._generate_and_score_gem(prompts, sampling_params, lora_requests, task_obj)
-
-        else:
-            return self._generate_and_score_standard(prompts, sampling_params, lora_requests, task_obj, answers)
-        
-    def _generate_and_score_standard(self, prompts, sampling_params, lora_requests, task_obj, answers):
         request_outputs = self.generate(
             prompts, 
             sampling_params, 
             lora_request=lora_requests, 
-            use_tqdm=False
+            use_tqdm=True,
         )
 
         # 2. Calculate fitness immediately (Local CPU)
@@ -321,7 +310,8 @@ class ESNcclLLM(LLM):
         num_prompts = len(answers)
         
         # We process linearly.
-        pop_responses_for_logging = ""
+        pop_responses_buffer = "" # Renamed for clarity
+
         for i, output in enumerate(request_outputs):
             prompt_idx = i % num_prompts
             pop_idx = i // num_prompts
@@ -332,8 +322,9 @@ class ESNcclLLM(LLM):
             sample_token_lens = []
             model_answers_set = set()
 
-            concatenated_samples_for_logging = ""
-
+            # Format current sample for potential logging
+            if pop_idx < 2 and prompt_idx < 3:
+                current_prompt_log = f"\n[PROMPT {prompt_idx}]: {prompts[i]}\n"
             for j, sample in enumerate(output.outputs):
                 text = sample.text
                 fit, model_ans = task_obj.get_fitness(text, gt_answer)
@@ -347,15 +338,17 @@ class ESNcclLLM(LLM):
                 sample_char_lens.append(len(text))
                 sample_token_lens.append(len(sample.token_ids))
                 total_responses += 1
+                if pop_idx < 2 and prompt_idx < 3:
+                    current_prompt_log += f"\n------SAMPLE {j+1}: {text} || FIT={fit}\n"
 
-                concatenated_samples_for_logging += f"SAMPLE {j+1}/{len(output.outputs)}: {text} ||FIT={fit}||\n"
+            if pop_idx < 2 and prompt_idx < 3:
+                pop_responses_buffer += current_prompt_log
 
-            if i+1 % num_prompts == 0:
-                pop_responses_for_logging = f"POP {pop_idx} RESPONSES:\n" + pop_responses_for_logging
-                responses_for_logging.append(pop_responses_for_logging)
-                pop_responses_for_logging = ""
-            else:
-                pop_responses_for_logging += concatenated_samples_for_logging
+            if (i + 1) % num_prompts == 0 and pop_responses_buffer != "":
+                if pop_responses_buffer:
+                    header = f"-----POP {pop_idx} BATCH LOG-----\n"
+                    responses_for_logging.append(header + pop_responses_buffer)
+                    pop_responses_buffer = ""
 
             fitness_list.append(sample_fitnesses)
             distinct_counts.append(len(model_answers_set))
@@ -371,118 +364,6 @@ class ESNcclLLM(LLM):
         }
 
         return fitness_list, info, responses_for_logging
-
-    def _generate_and_score_gem(self, seeds, sampling_params, lora_requests, task_obj: GEMWrapperTask):
-        """
-        Special handling for GEM tasks which are multi-turn and require environment interaction.
-        'seeds' contains the seed integers (as strings) for the environment.
-        e.g for 2 population members and batch size 3: ['0', '1', '2', '0', '1', '2']
-        """
-        num_envs = len(seeds)
-        from gem.vector.vector_env import AutoresetMode
-        vec_env = gem.make_vec(
-            env_ids=[task_obj.env_id] * num_envs,
-            wrappers=task_obj.wrapper_fns,
-            vec_kwargs=[{"seed": int(seeds[i])} for i in range(num_envs)],
-            async_mode=True,
-            autoreset_mode=AutoresetMode.NEXT_STEP
-        )
-        
-        obs, _ = vec_env.reset()
-        dones = [False] * num_envs
-        episodes = [[obs[i]] for i in range(num_envs)]
-        episode_rewards = [[] for _ in range(num_envs)]
-        episode_truncateds = [[] for _ in range(num_envs)]
-        episode_tok_lengths = [[] for _ in range(num_envs)]
-        active_indices = list(range(num_envs))
-
-        # Handle lora_requests being None or a list of Nones for base model eval
-        if lora_requests is None:
-            current_lora_requests = [None] * num_envs
-        else:
-            current_lora_requests = lora_requests
-
-        # Multi-turn interaction loop
-        for env_step in range(task_obj.max_steps):
-            if len(active_indices) == 0:
-                break
-            
-            # Select relevant requests for active indices
-            active_lora_reqs = [current_lora_requests[idx] for idx in active_indices]
-            active_obs = [obs[idx] for idx in active_indices]
-            active_obs = [task_obj.prompt_template(obs) for obs in active_obs]
-            if task_obj.apply_chat_template:
-                active_obs = [
-                    task_obj.tokenizer.apply_chat_template(
-                        [{"role": "user", "content": obs}],
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    ) for obs in active_obs
-                ]
-
-            request_outputs = self.generate(
-                active_obs,
-                sampling_params,
-                lora_request=active_lora_reqs,
-                use_tqdm=False
-            )
-            actions = [""] * num_envs
-            for idx, req_out in zip(active_indices, request_outputs):
-                response = req_out.outputs[0].text
-                actions[idx] = response
-                episodes[idx].append(response)
-                episode_tok_lengths[idx].append(len(req_out.outputs[0].token_ids))
-            next_obs, rewards, dones, truncateds, infos = vec_env.step(actions)
-
-            for idx in active_indices:
-                if not dones[idx]:
-                    episodes[idx].append(next_obs[idx])
-                episode_rewards[idx].append(rewards[idx])
-                episode_truncateds[idx].append(truncateds[idx])
-
-            active_indices = [idx for idx in active_indices if not dones[idx]]
-
-            obs = next_obs
-        
-        del vec_env
-
-        fitnesses = []
-        for rewards in episode_rewards:
-            discounted_return = 0.0
-            for t, r in enumerate(rewards):
-                discounted_return += (task_obj.gamma ** t) * r
-            fitnesses.append(discounted_return)
-        fitness_list = [[fit] for fit in fitnesses]
-
-        total_reponses = sum(len(episode_rewards[i]) for i in range(num_envs))
-        total_truncated = sum(sum(episode_truncateds[i]) for i in range(num_envs))
-        total_token_lengths = sum(sum(episode_tok_lengths[i]) for i in range(num_envs))
-        episode_lengths = [len(episode_rewards[i]) for i in range(num_envs)]
-        info = {
-            "total_reponses": total_reponses,
-            "mean_episode_length": np.mean(episode_lengths),
-            "prop_truncated": total_truncated / total_reponses if total_reponses > 0 else 0.0,
-            "mean_token_length": total_token_lengths / total_reponses if total_reponses > 0 else 0.0,
-            "prop_episodes_done": 1 - len(active_indices) / num_envs,
-        }
-
-        episodes_for_logging = []
-        for i, (episode, rewards) in enumerate(zip(episodes, episode_rewards)):
-            if i > 4:
-                break
-            prompt_idx = i % task_obj.batch_size
-            pop_idx = i // task_obj.batch_size
-            episode_text = f"--------\nEPISODE {i}/{len(episodes)}, PROMPT {prompt_idx}/{task_obj.batch_size}, POP {pop_idx}\n"
-            for j, segment in enumerate(episode):
-                if j % 2 == 0:
-                    episode_text += f"||OBS {j//2}/{len(episode)//2}|| {segment}\n"
-                else:
-                    episode_text += f"||ACTION  {j//2}/{len(episode)//2}|| {segment}\n"
-                    episode_text += f"||REWARD  {j//2}/{len(episode)//2}|| {rewards[j//2]}\n"
-            episode_text += f"TOTAL RETURN: {fitnesses[i]}\n"
-            episodes_for_logging.append(episode_text)
-
-        return fitness_list, info, episodes_for_logging
 
 def launch_engines(num_engines, model_name, population_size, lora_r):
     """Launches multiple vLLM engines, each dedicated to one GPU via Ray Placement Groups."""
@@ -505,8 +386,8 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
             model=model_name,
             tensor_parallel_size=1,
             distributed_executor_backend="ray",
-            worker_extension_cls="es_lora_nccl_async3.WorkerExtension",
-            dtype="float16", 
+            worker_extension_cls="es_lora_nccl_async2.WorkerExtension",
+            dtype="float16",
             enable_prefix_caching=False,
             enforce_eager=False,
             enable_lora=True,
@@ -531,7 +412,7 @@ def main(args: Args):
     if args.pass_at_k:
         assert args.samples_per_prompt > 1, f"{args.samples_per_prompt=} but {args.pass_at_k}"
     
-    print("--- Arguments ---")
+    print("\n--- Arguments ---")
     for k, v in vars(args).items(): print(f"  {k}: {v}")
     print(f"Detected {args.num_gpus} GPUs. Launching {args.num_engines} vLLM engines.")
     print("-----------------\n")
@@ -643,13 +524,28 @@ def main(args: Args):
             datset_size=args.sub_dataset_size,
             end_token=None
         )
-    elif args.task.startswith("gem:"):
-        env_id = args.task.split("gem:")[1]
-        task = GEMWrapperTask(
-            env_id=env_id,
+    elif args.task.startswith("math2:"):
+        dataset_name = args.task.split("math2:")[1]
+        task = MathTask2(
             batch_size=args.prompt_batch_size,
-            tokenizer=tokenizer,
-            gamma=args.gamma,
+            # tokenizer=tokenizer,
+            dataset_name=dataset_name,
+            datset_size=args.sub_dataset_size,
+            apply_chat_template=False,
+        )
+    elif args.task == "random":
+        task = RandomTask(
+            batch_size=args.prompt_batch_size,
+            max_tokens=args.max_tokens,
+            answer_format="none",
+            max_random_number=args.samples_per_prompt,
+        )
+    elif args.task == "random-boxed":
+        task = RandomTask(
+            batch_size=args.prompt_batch_size,
+            max_tokens=args.max_tokens,
+            answer_format="boxed",
+            max_random_number=args.samples_per_prompt,
         )
     else:
         raise ValueError(f"Unknown task: {args.task}")
@@ -661,12 +557,17 @@ def main(args: Args):
         n=args.samples_per_prompt,
         stop=[tokenizer.eos_token],
     )
-
-    # --- Setup Evaluation Tasks (Hardcoded) ---
-    # We only enable the hardcoded eval loop for gem:math tasks
-    if "gem:math" in args.task and args.steps_per_eval > 0:
+    do_eval = False
+    if "math2:" in args.task and args.steps_per_eval > 0:
         do_eval = True
         print("--- Configuring Evaluation Tasks ---")
+
+        # Ensure eval_batch_size is divisible by num_engines for multi-GPU
+        if args.eval_batch_size % args.num_engines != 0:
+            original_size = args.eval_batch_size
+            args.eval_batch_size = ((args.eval_batch_size + args.num_engines - 1) // args.num_engines) * args.num_engines
+            print(f"Adjusted eval_batch_size from {original_size} to {args.eval_batch_size} to be divisible by {args.num_engines} GPUs")
+
         eval_sampling_params = SamplingParams(
             temperature=0.0,
             seed=args.base_seed + 12345,
@@ -674,27 +575,14 @@ def main(args: Args):
             n=1,
             stop=[tokenizer.eos_token],
         )
-        # Using a deterministic set of seeds for eval every time
-        # Convert to strings as GEM wrapper expects
-        eval_seeds = [str(args.base_seed + 100000 + i) for i in range(args.eval_batch_size)]
-        
-        eval_task_names = ["MATH500", "AMC", "OlympiadBench", "Minerva", "AIME24"]
-        eval_tasks = []
-        for name in eval_task_names:
-            
-            et = GEMWrapperTask(
-                env_id=f"eval:{name}", # Adjust based on actual GEM registry IDs
-                batch_size=args.eval_batch_size, # Not strictly used in run_distributed_inference logic but good for consistency
-                tokenizer=tokenizer,
-                gamma=args.gamma,
-                wrappers=task.wrappers, 
-                prompt_template=task.prompt_template,
-                apply_chat_template=task.apply_chat_template,
-            )
-            eval_tasks.append(et)
-        print(f"Prepared {len(eval_tasks)} evaluation tasks: {[t.env_id for t in eval_tasks]}")
-
-    
+        eval_task = MathTask2(
+            batch_size=args.eval_batch_size,
+            # tokenizer=tokenizer,
+            dataset_name="math-eval",
+            datset_size=None,
+            apply_chat_template=task.apply_chat_template,
+        )
+        print(f"Training on {args.task}, evaluating on {eval_task.split_names}.")
 
     # Launch engines
     engines, pgs = launch_engines(args.num_engines, base_model_path, args.population_size, args.lora_r)
@@ -731,49 +619,57 @@ def main(args: Args):
         total_iter_start = time.time()
 
         # --- EVALUATION LOOP (Before training step or periodically) ---
+        eval_info_dict_all = {}
         if args.steps_per_eval > 0 and es_step % args.steps_per_eval == 0 and do_eval:
-            eval_info = {}
-            eval_start = time.time()
             print(f"\n--- Running Evaluation at Step {es_step} ---")
-            # evaluate_on_tasks(engines, eval_tasks, eval_seeds, eval_sampling_params, es_step, args)
-            prompts = eval_seeds
-            prompts_per_engine = (len(prompts) + args.num_engines - 1) // args.num_engines
-            for eval_task in eval_tasks:
-                eval_i_start = time.time()
-                task_ref = ray.put(eval_task)
-                all_refs = []
+            # 2. Evaluate Population
+            eval_start = time.time()
+            prompts, answers = eval_task.get_eval_batch()
+            assert len(prompts) % args.num_engines == 0, f"{len(prompts)=} must be divisible by {args.num_engines=}"
+            eval_requests_per_engine = len(prompts) // args.num_engines
+            task_ref = ray.put(eval_task)
+            answers_ref = ray.put(answers)
+            all_refs = []
 
-                for i, engine_idx in enumerate(range(args.num_engines)):
-                    llm = engines[engine_idx]
-                    engine_prompts = prompts[
-                        engine_idx * prompts_per_engine : (engine_idx + 1) * prompts_per_engine
-                    ]
-                    ref = llm.generate_and_score.remote(
-                        engine_prompts,
-                        eval_sampling_params, 
-                        lora_requests=None,
-                        task_obj=task_ref,
-                        answers=None
-                    )
-                    all_refs.append(ref)
+            for engine_idx in range(args.num_engines):
+                llm = engines[engine_idx]
+                engine_prompts = prompts[
+                    engine_idx * eval_requests_per_engine : (engine_idx + 1) * eval_requests_per_engine
+                ]
 
-                # GATHER results
-                results = ray.get(all_refs)
-                list_of_fitness_arrays = []
-
-                all_fitnesses = []
-                for i, res in enumerate(results):
-                    (eng_fitness, info_dict, eng_sample_output) = res
-                    all_fitnesses.extend([x[0] for x in eng_fitness])
-                    
-                avg_fitness = np.mean(all_fitnesses)
-                eval_info[f"eval/{eval_task.env_id}_mean_fitness"] = avg_fitness
-                print(f"  --> {eval_task.env_id} ({time.time() - eval_i_start:.2f}s): Mean Fitness = {avg_fitness:.4f}")
-            print(f"--- Evaluation Complete in {time.time() - eval_start:.2f}s ---\n")
-            if args.use_wandb:
-                eval_info["es_step"] = es_step
-                wandb.log(eval_info)
-
+                # Launch the remote task (non-blocking)
+                ref = llm.generate_and_score.remote(
+                    engine_prompts, 
+                    eval_sampling_params, 
+                    lora_requests=None,
+                    task_obj=task_ref,
+                    answers=answers_ref
+                )
+                all_refs.append(ref)
+            # GATHER: Wait for ALL evaluations to complete (single blocking call)
+            if args.verbose: print(f"EVAL: Waiting for {len(all_refs)} asynchronous evaluations to complete...")
+            results = ray.get(all_refs)
+            list_of_fitness_arrays = []
+            for i, res in enumerate(results):
+                (eng_fitness, info_dict, eng_sample_output) = res
+                # Reshape flat lists to (Loras_per_engine, Prompts, Samples)
+                eng_fitness_np = np.array(eng_fitness)
+                list_of_fitness_arrays.append(eng_fitness_np)
+                if i == 0:
+                    eval_info_dict_all = {k: [] for k in info_dict.keys()}
+                for k, v in info_dict.items():
+                    eval_info_dict_all[k].append(v)
+            eval_info_dict_all = {f"eval/{k}": np.mean(v) for k, v in eval_info_dict_all.items()}
+            eval_task_names = eval_task.split_names
+            all_fitnesses_shaped = np.concatenate(list_of_fitness_arrays, axis=0).reshape(len(eval_task_names), eval_task.batch_size)
+            print(f"\n--------------------------------")
+            for eval_task_name, fitness_array in zip(eval_task_names, all_fitnesses_shaped):
+                mean_fitness = np.mean(fitness_array)
+                eval_info_dict_all[f"eval/{eval_task_name}_mean_fitness"] = mean_fitness
+                print(f"EVAL {eval_task_name}: Mean fitness: {mean_fitness:.4f}")
+            print(f"--------------------------------\n")
+            eval_time = time.time() - eval_start
+            if args.verbose: print(f"EVAL complete in {eval_time:.4f}s")
 
         # 1. Create and save population of noisy LoRA adapters
         if es_step % args.steps_per_adapter == 0:
@@ -801,6 +697,13 @@ def main(args: Args):
         # 2. Evaluate Population
         vllm_start = time.time()
         prompts, answers = task.get_batch()
+        repeated_lora_requests = []
+        repeated_prompts = []
+        for lora_request in lora_requests:
+            repeated_lora_requests.extend([lora_request] * len(prompts))
+            repeated_prompts.extend(prompts)
+        requests_per_engine = loras_per_engine * len(prompts)
+        assert requests_per_engine == len(repeated_prompts) // args.num_engines
         
         task_ref = ray.put(task)
         answers_ref = ray.put(answers)
@@ -808,51 +711,40 @@ def main(args: Args):
 
         for engine_idx in range(args.num_engines):
             llm = engines[engine_idx]
-            engine_lora_requests = lora_requests[
-                engine_idx * loras_per_engine : (engine_idx + 1) * loras_per_engine]
+            engine_lora_requests = repeated_lora_requests[
+                engine_idx * requests_per_engine : (engine_idx + 1) * requests_per_engine
+            ]
+            engine_prompts = repeated_prompts[
+                engine_idx * requests_per_engine : (engine_idx + 1) * requests_per_engine
+            ]
 
             # Launch the remote task (non-blocking)
-            repeated_engine_lora_requests = []
-            repeated_prompts = []
-            for lora_request in engine_lora_requests:
-                repeated_engine_lora_requests.extend([lora_request] * len(prompts))
-                repeated_prompts.extend(prompts)
-            assert len(repeated_prompts) == len(repeated_engine_lora_requests), f"{len(repeated_prompts)=} != {len(repeated_engine_lora_requests)=}"
-
             ref = llm.generate_and_score.remote(
-                repeated_prompts, 
+                engine_prompts, 
                 sampling_params, 
-                lora_requests=repeated_engine_lora_requests,
+                lora_requests=engine_lora_requests,
                 task_obj=task_ref,
                 answers=answers_ref
             )
             all_refs.append(ref)
-
         # GATHER: Wait for ALL evaluations to complete (single blocking call)
         if args.verbose: print(f"Waiting for {len(all_refs)} asynchronous evaluations to complete...")
-        
-        # This now gets (fitness, distinct, total, trunc, char_lens, token_lens, sample_output)
         results = ray.get(all_refs)
         vllm_time = time.time() - vllm_start
         if args.verbose: print(f"vLLM evals + fitness calc complete in {vllm_time:.4f}s")
         
         aggregation_start = time.time()
         list_of_fitness_arrays = []
-
         for i, res in enumerate(results):
             (eng_fitness, info_dict, eng_sample_output) = res
-            
             # Reshape flat lists to (Loras_per_engine, Prompts, Samples)
             eng_fitness_np = np.array(eng_fitness).reshape(loras_per_engine, len(prompts), args.samples_per_prompt)
             list_of_fitness_arrays.append(eng_fitness_np)
-
             if i == 0:
                 info_dict_all = {k: [] for k in info_dict.keys()}
             for k, v in info_dict.items():
                 info_dict_all[k].append(v)
-
         info_dict_all = {k: np.mean(v) for k, v in info_dict_all.items()}
-        
         all_fitnesses_shaped = np.concatenate(list_of_fitness_arrays, axis=0)
         assert all_fitnesses_shaped.shape == (args.population_size, len(prompts), args.samples_per_prompt), \
             f"Fitness array shape mismatch! Got {all_fitnesses_shaped.shape}, expected {(args.population_size, len(prompts), args.samples_per_prompt)}"
@@ -879,7 +771,6 @@ def main(args: Args):
                 for text in generations_for_logging:
                     print(text)
                 print(f"----FITNESS: {fitness_per_pop[pop_idx]:.4f}, NORMALIZED FITNESS: {normalized_fitnesses[pop_idx]:.4f}\n")
-
             print(f"\nFitness per prompt (averaged over population): {fitness_per_prompt}")
         mean_fitness = float(np.mean(fitnesses_shaped))
         min_fitness = float(np.min(fitnesses_shaped))
@@ -887,9 +778,7 @@ def main(args: Args):
         std_normalized_fitness = float(normalized_fitnesses_std)
         pass_at_k_fitness = float(np.mean(np.max(all_fitnesses_shaped, axis=2)))
         std_in_samples = float(np.std(all_fitnesses_shaped, axis=2).mean()) if args.samples_per_prompt > 1 else 0.0
-
-        current_time = time.time()
-        print(f"Mean fitness: {mean_fitness:.4f}, min: {min_fitness:.4f}, max: {max_fitness:.4f}, std_normalized_fitness: {std_normalized_fitness:.4f}, pass@k fitness: {pass_at_k_fitness:.4f}, std_in_samples: {std_in_samples:.4f}")
+        print(f"Mean fitness: {mean_fitness:.4f}, min: {min_fitness:.4f}, max: {max_fitness:.4f}, std_normalized_fitness: {std_normalized_fitness:.4f}, pass@k fitness: {pass_at_k_fitness:.4f}, std_in_samples: {std_in_samples:.4f}, distinct_answers: {info_dict_all.get('mean_distinct_counts', -1.0):.4f}, prop_truncated: {info_dict_all.get('prop_truncated', -1.0):.4f}")
         for k, v in info_dict_all.items():
             print(f"  {k}: {v:.4f}")
 
@@ -900,22 +789,17 @@ def main(args: Args):
             args=(normalized_fitnesses, peft_shapes_dict, es_step, args)
         ))
         update_time = time.time() - update_start
-
         if args.verbose: print(f"Applied ES update on Engine 0 in {update_time:.4f}s")
-        if args.use_wandb: wandb.log({"time/update_application": update_time, "es_step": es_step})
 
         # 4. Broadcast updated weights
         broadcast_start = time.time()
         ray.get([e.collective_rpc.remote("broadcast_all_weights", args=(0,)) for e in engines])
         broadcast_time = time.time() - broadcast_start
         if args.verbose: print(f"Broadcasted updated weights to all engines in {broadcast_time:.4f}s (NCCL sync)")
-        if args.use_wandb: wandb.log({"time/broadcast": broadcast_time, "es_step": es_step})
 
+        # 5. Logging and WandB
         total_iter_end = time.time()
         iter_time = total_iter_end - total_iter_start
-        
-        if args.use_wandb: wandb.log({"time_per_es_step": iter_time, "es_step": es_step})
-
         if args.use_wandb:
             wandb.log({
                 "mean_fitness": mean_fitness,
@@ -932,10 +816,10 @@ def main(args: Args):
                 "time/update": update_time,
                 "time/broadcast": broadcast_time,
                 "time/iteration": iter_time,
-                "total_time": current_time - total_time,
-                **info_dict_all
+                "total_time": time.time() - total_time,
+                **info_dict_all,
+                **eval_info_dict_all,
             })
-        
         if args.verbose:
             total_time2 = vllm_time + aggregation_time + lora_gen_time + update_time + broadcast_time
             print(f"TIMES: total: {iter_time:.4f}s (or {total_time2}s),  LoRA gen: {lora_gen_time:.4f}s, vLLM+Score: {vllm_time:.4f}s, Aggregation: {aggregation_time:.4f}s, ES update: {update_time:.4f}s, broadcast: {broadcast_time:.4f}s")

@@ -3,7 +3,7 @@
 #SBATCH --job-name=es_lora_nccl_multigpu
 #SBATCH --gpus=4                  # Request 4 GPUs (adjust as needed: 2, 4, 8, etc.)
 #SBATCH --time=24:00:00           # Time limit hrs:min:sec
-#SBATCH --output=/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/logs/multigpu1_%j.log    # Log file path (%j is job ID)
+#SBATCH --output=/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/logs/multigpu-%j.log    # Log file path (%j is job ID)
 #SBATCH --cpus-per-task=16        # Ensure enough CPUs for Ray actors (4 CPUs per GPU is a good rule)
 
 # --- Create logs directory if it doesn't exist ---
@@ -76,7 +76,7 @@ python -c "import torch; print(f'PyTorch sees {torch.cuda.device_count()} GPUs')
 
 # --- Run the Python Script ---
 echo "Starting Python script..."
-python es_lora_nccl_async2.py \
+python es_lora_multigpu.py \
     --sigma $sigma \
     --learning-rate $learning_rate \
     --max-tokens $max_tokens \
