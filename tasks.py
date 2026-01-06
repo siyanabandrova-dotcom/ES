@@ -61,7 +61,6 @@ class ZerosTask:
             "Output 3 numbers and then stop:",
             # "Output zeros:",
         ]
-        assert batch_size <= len(self.prompts), f"{batch_size=} must be <= {len(self.prompts)=}"
 
     def get_batch(self):
         indices = np.arange(self.batch_size) % len(self.prompts)

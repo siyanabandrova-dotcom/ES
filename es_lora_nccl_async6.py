@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""ES-LoRA Training with NCCL and async evaluation"""
+
+print("=" * 80, flush=True)
+print("LOADING MODULE: es_lora_nccl_async6.py", flush=True)
+print("=" * 80, flush=True)
+
 import argparse
 from datetime import datetime
 import gc
@@ -12,21 +19,41 @@ from dataclasses import dataclass
 import copy
 import math
 
+print("IMPORTS: Standard library imports done", flush=True)
+
 import numpy as np
 import ray
 from ray.util.placement_group import placement_group, remove_placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+
+print("IMPORTS: Ray imports done", flush=True)
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+print("IMPORTS: PyTorch and Transformers done", flush=True)
+
 from vllm import LLM, SamplingParams
 from vllm.utils import get_ip, get_open_port
 import tyro
+
+print("IMPORTS: vLLM and tyro done", flush=True)
+
 import wandb
+import weave
+
+print("IMPORTS: wandb and weave done", flush=True)
+
 from peft import LoraConfig, get_peft_model
 from vllm.lora.request import LoRARequest
 from safetensors.torch import save_file
 
+print("IMPORTS: PEFT and safetensors done", flush=True)
+
 from tasks import MathTask, CountdownTask, ZerosTask, MathTask2, RandomTask
+
+print("IMPORTS: All imports completed successfully", flush=True)
+print("=" * 80, flush=True)
 
 # Default Hyperparameters
 EXPERIMENT_DIR = "/dev/shm/outputs_es_lora"
@@ -35,7 +62,7 @@ LORA_POPULATION_PATH = "/dev/shm/es_lora_population_async"
 @dataclass
 class Args:
     """ES Fine-tuning for Countdown Task with multi-engine NCCL sync and LoRA population"""
-    model_name: str = "Qwen/Qwen2-0.5B" # "Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen3-1.7B"
+    model_name: str = "Qwen/Qwen2-0.5B" 
     # --- ES Hyperparameters ---
     sigma: float = 0.001
     population_size: int = 128
@@ -50,7 +77,7 @@ class Args:
 
     # --- LoRA Config ---
     lora_r: int = 4
-    lora_alpha: int = 1
+    lora_alpha: int = None
     steps_per_adapter: int = 4
     learning_rate: float = 0.001
 
@@ -62,12 +89,16 @@ class Args:
     base_seed: int = 0
     sub_dataset_size: int = None
     steps_per_eval: int = 10 # -1 to disable
-    eval_batch_size: int = 16 # Number of episodes/problems to run during eval
+    eval_batch_size: int = 16 
 
     # --- WandB ---
     use_wandb: bool = False
-    wandb_project: str = "hyperscalees-vllm-nccl"
+    wandb_project: str = "hyperscalees-vllm-multinode"
     name_prefix: str = f"debug"
+
+    def __post_init__(self):
+        if self.lora_alpha is None:
+            self.lora_alpha = self.lora_r
 
 
 LORA_TARGET_MODULES = [
@@ -81,8 +112,6 @@ def map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, device: torch.
         if name.endswith(".base_layer.weight")
     }
     for peft_name, weight_update in peft_updates_dict.items():
-        # Example peft: base_model.model.model.layers.0.self_attn.q_proj.base_layer.weight
-        # Example vllm: model.layers.0.self_attn.qkv_proj.base_layer.weight
         vllm_name = peft_name.replace("base_model.model.", "")
         if "self_attn.q_proj" in vllm_name:
             vllm_name = vllm_name.replace("self_attn.q_proj", "self_attn.qkv_proj")
@@ -161,51 +190,19 @@ def get_rng_noise(
                 ) for shape in shapes)
     return noise_a, noise_b
 
-@torch.no_grad()
-def create_lora_adapter_files(
-    peft_model, peft_params_dict, peft_state_dict, peft_shapes_dict, adapter_paths, es_step, args: Args
-):
-    pop_step = es_step // args.steps_per_adapter
-    for pop_idx in range(args.population_size):
-        peft_model.load_state_dict(peft_state_dict)
-        for layer_idx, (peft_name, weight_shape) in enumerate(peft_shapes_dict.items()):
-            lora_a_name = peft_name.replace("base_layer.weight", "lora_A.default.weight")
-            lora_b_name = peft_name.replace("base_layer.weight", "lora_B.default.weight")
-            lora_a = peft_params_dict[lora_a_name]
-            lora_b = peft_params_dict[lora_b_name]
-            lora_b_shape, lora_a_shape = (weight_shape[0], args.lora_r), (args.lora_r, weight_shape[1])
-            assert lora_a.shape == lora_a_shape, f"{lora_a.shape=} vs {lora_a_shape=}"
-            assert lora_b.shape == lora_b_shape, f"{lora_b.shape=} vs {lora_b_shape=}"
-            noise_a, noise_b = get_rng_noise(
-                base_seed=args.base_seed,
-                num_pop_pairs=args.population_size//2,
-                pop_pair_idx=pop_idx//2,
-                num_layers=len(peft_shapes_dict.keys()),
-                layer_idx=layer_idx,
-                step=pop_step,
-                shapes=[lora_a_shape, lora_b_shape],
-            )
-            noise_b *= math.sqrt(args.sigma)
-            noise_a *= math.sqrt(args.sigma)
-            lora_a.zero_()
-            lora_b.zero_()
-            lora_a.add_(noise_a)
-            if pop_idx % 2 == 1:
-                lora_b.add_(-noise_b)
-            else:
-                lora_b.add_(noise_b)
-
-        adapter_path = adapter_paths[pop_idx]
-        peft_model.save_pretrained(adapter_path)
-
-    gc.collect()
-    torch.cuda.empty_cache()
+# [REMOVED] create_lora_adapter_files
+# Logic moved to ESNcclLLM.generate_local_adapters to run on workers
 
 class WorkerExtension:
     """
     Custom extension for vLLM workers to handle ES update and NCCL broadcast.
     This class is passed to the vLLM engine via 'worker_extension_cls'.
     """
+
+    def get_transport_info(self):
+        """Returns the IP and a free port from the worker's perspective."""
+        return get_ip(), get_open_port()
+
     @torch.no_grad()
     def apply_lora_es_update(self, normalized_fitnesses: list[tuple[int, float]], peft_shapes_dict, es_step: int, args: Args):
         """
@@ -247,14 +244,47 @@ class WorkerExtension:
 
         vllm_updates_dict = map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, self.device)
 
+        # Debug: Check if updates are non-zero
+        max_peft_update = max([v.abs().max().item() for v in peft_updates_dict.values()])
+        max_vllm_update = max([v.abs().max().item() for v in vllm_updates_dict.values()])
+        print(f"ES UPDATE DEBUG: max_peft_update={max_peft_update:.6e}, max_vllm_update={max_vllm_update:.6e}", flush=True)
+
+        # Check fitness differences
+        fitness_diffs = [abs(normalized_fitnesses[i] - normalized_fitnesses[i+1]) for i in range(0, len(normalized_fitnesses)-1, 2)]
+        max_fitness_diff = max(fitness_diffs) if fitness_diffs else 0
+        print(f"ES UPDATE DEBUG: max_fitness_diff={max_fitness_diff:.6e}, population_size={args.population_size}, sigma={args.sigma}", flush=True)
+
+        # Store a sample weight before update for debugging
+        sample_param_name = None
+        sample_param_before = None
+
         for i, (name, param) in enumerate(self.model_runner.model.named_parameters()):
             if name in vllm_updates_dict:
+                if sample_param_name is None:
+                    sample_param_name = name
+                    sample_param_before = param.data.clone().cpu()
+
                 update = vllm_updates_dict[name]
                 gradient = (1.0 / (args.population_size * args.sigma + 1e-8)) * update * args.learning_rate
-                param += gradient
+                if sample_param_name == name:
+                    print(f"ES UPDATE DEBUG: gradient.abs().max()={gradient.abs().max().item():.6e}, lr={args.learning_rate}", flush=True)
+                param.data.add_(gradient)  # Use .data.add_() to ensure in-place update
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+
+        # Check if weights actually changed
+        if sample_param_name is not None:
+            sample_param_after = None
+            for name, param in self.model_runner.model.named_parameters():
+                if name == sample_param_name:
+                    sample_param_after = param.data.clone().cpu()
+                    break
+
+            if sample_param_after is not None:
+                weight_diff = (sample_param_after - sample_param_before).abs().max().item()
+                print(f"ES UPDATE: Max weight change in {sample_param_name}: {weight_diff:.6e}", flush=True)
+
         torch.cuda.empty_cache()
         gc.collect()
         return True
@@ -270,31 +300,193 @@ class WorkerExtension:
 
     @torch.no_grad()
     def broadcast_all_weights(self, src_rank: int):
+        # NOTE: NCCL broadcast is a COLLECTIVE operation - ALL ranks must participate,
+        # including the source rank. The source sends, others receive.
+
+        print(f"WORKER {self.gpu_rank}: broadcast_all_weights called, src_rank={src_rank}", flush=True)
+
         if not self.inter_pg:
+            # NCCL not available - this will require weights to be sent via Ray
+            # Return False to signal caller to use Ray-based broadcast instead
+            print(f"WORKER {self.gpu_rank}: No NCCL inter_pg available, returning False", flush=True)
             return False
 
-        for name, param in self.model_runner.model.named_parameters():
-            self.inter_pg.broadcast(param, src=int(src_rank), stream=torch.cuda.current_stream())
-        
+        try:
+            is_source = (self.gpu_rank == int(src_rank))
+            role = "sender" if is_source else "receiver"
+            print(f"WORKER {self.gpu_rank}: Starting NCCL broadcast as {role} (src={src_rank})...", flush=True)
+
+            param_count = 0
+            for name, param in self.model_runner.model.named_parameters():
+                # ALL ranks must call broadcast - source sends, others receive
+                self.inter_pg.broadcast(param, src=int(src_rank), stream=torch.cuda.current_stream())
+                param_count += 1
+
+            print(f"WORKER {self.gpu_rank}: Broadcast {param_count} parameters, synchronizing...", flush=True)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            print(f"WORKER {self.gpu_rank}: Broadcast complete ({role})", flush=True)
+            return True
+        except Exception as e:
+            print(f"WORKER {self.gpu_rank}: NCCL broadcast failed: {e}", flush=True)
+            return False
+
+    @torch.no_grad()
+    def get_model_state_dict(self):
+        """Get the current model state dict (for Ray-based broadcast)"""
+        return {name: param.cpu().clone() for name, param in self.model_runner.model.named_parameters()}
+
+    @torch.no_grad()
+    def set_model_state_dict(self, state_dict):
+        """Set the model state dict (for Ray-based broadcast)"""
+        model_params = dict(self.model_runner.model.named_parameters())
+        for name, param in state_dict.items():
+            if name in model_params:
+                model_params[name].data.copy_(param.to(model_params[name].device))
+
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         return True
-    
+
 class ESNcclLLM(LLM):
     """vLLM subclass using the custom WorkerExtension."""
     def __init__(self, *args, **kwargs):
         os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         super().__init__(*args, **kwargs)
+        
+        # Placeholders for LoRA generation data
+        self.lora_init_state_dict = None
+        self.lora_init_shapes = None
+        self.lora_config_data = None
 
+    def setup_local_lora_generation(self, peft_state_dict, peft_shapes_dict, lora_config_dict, rank: int):
+        """Receives the initial LoRA state to be able to reconstruct adapters locally."""
+        self.lora_init_state_dict = peft_state_dict
+        self.lora_init_shapes = peft_shapes_dict
+        self.lora_config_data = lora_config_dict
+        self.rank = rank
+        
+        self.lora_storage_path = f"{LORA_POPULATION_PATH}_{self.rank}"
+        
+        if os.path.exists(self.lora_storage_path):
+            shutil.rmtree(self.lora_storage_path)
+        os.makedirs(self.lora_storage_path, exist_ok=True)
+        return True
+    
+    
+
+    def generate_local_adapters(self, population_indices: list[int], es_step: int, args: Args):
+        """
+        Generates LoRA adapter files in the LOCAL /dev/shm of this worker node.
+        Returns the absolute paths to these files.
+        """
+        adapter_paths = []
+        pop_step = es_step // args.steps_per_adapter
+        
+        # Ensure config is JSON serializable
+        config_to_save = copy.deepcopy(self.lora_config_data)
+        if "target_modules" in config_to_save and isinstance(config_to_save["target_modules"], (set, tuple)):
+            config_to_save["target_modules"] = list(config_to_save["target_modules"])
+
+        for pop_idx in population_indices:
+            adapter_path = os.path.join(self.lora_storage_path, f"pop_{pop_idx}")
+            os.makedirs(adapter_path, exist_ok=True)
+            adapter_paths.append(adapter_path)
+            
+            # Save config
+            with open(os.path.join(adapter_path, "adapter_config.json"), "w") as f:
+                json.dump(config_to_save, f)
+
+            # Generate weights (sanitized)
+            local_state_dict = {}
+            for layer_idx, (peft_name, weight_shape) in enumerate(self.lora_init_shapes.items()):
+                # Generate LoRA A and B names from the base_layer.weight name
+                lora_a_name_raw = peft_name.replace("base_layer.weight", "lora_A.default.weight")
+                lora_b_name_raw = peft_name.replace("base_layer.weight", "lora_B.default.weight")
+
+                # Sanitize keys for vLLM:
+                # 1. PEFT uses "base_model.model.model.*" but vLLM expects "base_model.model.*"
+                # 2. PEFT uses ".lora_A.default.weight" but vLLM expects ".lora_A.weight"
+                # lora_a_name = lora_a_name_raw.replace("base_model.model.model.", "base_model.model.")
+                # lora_a_name = lora_a_name.replace(".lora_A.default.weight", ".lora_A.weight")
+                # lora_b_name = lora_b_name_raw.replace("base_model.model.model.", "base_model.model.")
+                # lora_b_name = lora_b_name.replace(".lora_B.default.weight", ".lora_B.weight")
+                lora_a_name = lora_a_name_raw.replace(".lora_A.default.weight", ".lora_A.weight")
+                lora_b_name = lora_b_name_raw.replace(".lora_B.default.weight", ".lora_B.weight")
+
+                # Get base (initial) weights and clone to CPU
+                lora_a = self.lora_init_state_dict[lora_a_name_raw].clone().cpu()
+                lora_b = self.lora_init_state_dict[lora_b_name_raw].clone().cpu()
+
+                lora_b_shape, lora_a_shape = (weight_shape[0], args.lora_r), (args.lora_r, weight_shape[1])
+
+                noise_a, noise_b = get_rng_noise(
+                    base_seed=args.base_seed,
+                    num_pop_pairs=args.population_size//2,
+                    pop_pair_idx=pop_idx//2,
+                    num_layers=len(self.lora_init_shapes.keys()),
+                    layer_idx=layer_idx,
+                    step=pop_step,
+                    shapes=[lora_a_shape, lora_b_shape],
+                )
+
+                noise_b *= math.sqrt(args.sigma)
+                noise_a *= math.sqrt(args.sigma)
+
+                # Zero out the weights (LoRA A is randomly initialized by PEFT, but we want to start from zero)
+                lora_a.zero_()
+                lora_b.zero_()
+
+                # Antithetic sampling logic
+                lora_a.add_(noise_a)
+                if pop_idx % 2 == 1:
+                    lora_b.add_(-noise_b)
+                else:
+                    lora_b.add_(noise_b)
+
+                # Debug: Check if LoRA weights are non-zero (only for first layer of first few adapters)
+                if layer_idx == 0 and pop_idx < 4:
+                    max_a = lora_a.abs().max().item()
+                    max_b = lora_b.abs().max().item()
+                    print(f"LORA GEN DEBUG: pop_idx={pop_idx}, layer={layer_idx}, max_a={max_a:.6e}, max_b={max_b:.6e}, sigma={math.sqrt(args.sigma):.6e}", flush=True)
+
+                local_state_dict[lora_a_name] = lora_a
+                local_state_dict[lora_b_name] = lora_b
+
+            # Save tensors
+            save_file(local_state_dict, os.path.join(adapter_path, "adapter_model.safetensors"))
+
+        # Debug: Verify first adapter exists and has non-zero weights
+        if len(adapter_paths) > 0:
+            from safetensors import safe_open
+            first_adapter = adapter_paths[0]
+            with safe_open(os.path.join(first_adapter, "adapter_model.safetensors"), framework="pt", device="cpu") as f:
+                keys = list(f.keys())
+                if len(keys) > 0:
+                    first_tensor = f.get_tensor(keys[0])
+                    print(f"LORA GEN DEBUG: First adapter first tensor max: {first_tensor.abs().max().item():.6e}", flush=True)
+        
+        return adapter_paths
+    
     def generate_and_score(self, prompts, sampling_params, lora_requests, task_obj, answers):
         """
         Generates responses AND calculates fitness/stats on the GPU worker.
         """
+        # Debug: Check if LoRA requests are being passed
+        if lora_requests is not None:
+            if isinstance(lora_requests, list) and len(lora_requests) > 0:
+                print(f"GENERATE DEBUG: Received {len(lora_requests)} LoRA requests", flush=True)
+                print(f"GENERATE DEBUG: First LoRA: name={lora_requests[0].lora_name}, id={lora_requests[0].lora_int_id}, path={lora_requests[0].lora_path}", flush=True)
+                if len(lora_requests) > 1:
+                    print(f"GENERATE DEBUG: Second LoRA: name={lora_requests[1].lora_name}, id={lora_requests[1].lora_int_id}, path={lora_requests[1].lora_path}", flush=True)
+        else:
+            print(f"GENERATE DEBUG: LoRA requests is None", flush=True)
+
         request_outputs = self.generate(
-            prompts, 
-            sampling_params, 
-            lora_request=lora_requests, 
+            prompts,
+            sampling_params,
+            lora_request=lora_requests,
             use_tqdm=True,
         )
 
@@ -386,7 +578,7 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
             model=model_name,
             tensor_parallel_size=1,
             distributed_executor_backend="ray",
-            worker_extension_cls="es_lora_nccl_async2.WorkerExtension",
+            worker_extension_cls="es_lora_nccl_async6.WorkerExtension",
             dtype="float16",
             enable_prefix_caching=False,
             enforce_eager=False,
@@ -394,15 +586,37 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
             max_loras=(population_size + num_engines - 1) // num_engines,
             max_lora_rank=max(lora_r, 8),
             gpu_memory_utilization=0.6,
+            trust_remote_code=True,
         )
         for strategy in strategies
     ]
     return engines, pgs
 
 def main(args: Args):
-    # --- Setup/Init ---
-    args.num_gpus = torch.cuda.device_count()
+    print("MAIN: Entered main function", flush=True)
+    sys.stdout.flush()
+
+    # --- 1. Initialize Ray FIRST (Connect to the cluster created by Slurm) ---
+    # We must do this before counting GPUs, otherwise we only see local GPUs.
+    print("MAIN: Connecting to Ray Cluster...", flush=True)
+    # address="auto" picks up the RAY_ADDRESS env var set by your bash script
+    ray.init(address="auto", include_dashboard=False, ignore_reinit_error=True)
+    
+    # --- 2. Query Ray for TOTAL Cluster Resources ---
+    print("MAIN: Querying Ray for total cluster resources...", flush=True)
+    resources = ray.cluster_resources()
+    total_gpus = int(resources.get("GPU", 0))
+    
+    if total_gpus == 0:
+        raise ValueError("Ray cluster reports 0 GPUs! Check your Slurm/Ray configuration.")
+
+    args.num_gpus = total_gpus
     args.num_engines = args.num_gpus
+    
+    print(f"MAIN: Ray detected {args.num_gpus} GPUs across the cluster.", flush=True)
+    print(f"MAIN: Launching {args.num_engines} engines (1 per GPU).", flush=True)
+    sys.stdout.flush()
+
     assert args.population_size % 2 ==0, f"{args.population_size=} must be even for antithetic sampling."
     assert args.population_size % args.num_engines == 0, f"{args.population_size=} must be divisible by {args.num_engines=}."
     loras_per_engine = args.population_size // args.num_engines
@@ -411,11 +625,12 @@ def main(args: Args):
         assert args.temperature > 0.0, f"{args.samples_per_prompt=} requires {args.temperature=} > 0.0."
     if args.pass_at_k:
         assert args.samples_per_prompt > 1, f"{args.samples_per_prompt=} but {args.pass_at_k}"
-    
+
     print("\n--- Arguments ---")
     for k, v in vars(args).items(): print(f"  {k}: {v}")
     print(f"Detected {args.num_gpus} GPUs. Launching {args.num_engines} vLLM engines.")
     print("-----------------\n")
+    sys.stdout.flush()
 
     fitnesses_so_far = []
 
@@ -423,20 +638,13 @@ def main(args: Args):
     random.seed(args.base_seed)
     np.random.seed(args.base_seed)
     torch.manual_seed(args.base_seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.base_seed)
+    # if torch.cuda.is_available():
+    #     torch.cuda.manual_seed_all(args.base_seed)
     
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(args.num_gpus))
+    # os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(args.num_gpus))
     
-    # --- Setup output directories and adapter paths ---
-    if os.path.exists(LORA_POPULATION_PATH):
-        shutil.rmtree(LORA_POPULATION_PATH)
-    os.makedirs(LORA_POPULATION_PATH, exist_ok=True)
-    
-    adapter_paths = []
-    for pop_idx in range(args.population_size):
-        adapter_path = os.path.join(LORA_POPULATION_PATH, f"pop_{pop_idx}")
-        adapter_paths.append(adapter_path)
+    # --- Setup output directories ---
+    # NOTE: LORA_POPULATION_PATH is now handled locally on each node by the workers.
 
     # --- WandB Setup ---
     run_name = f"{args.name_prefix}-" if args.name_prefix != "" else ""
@@ -457,18 +665,24 @@ def main(args: Args):
     run_name += f"gpus{args.num_gpus}-"
     run_name += f"-{int(time.time())}"
     if args.use_wandb:
+        print("MAIN: Initializing WandB...", flush=True)
+        sys.stdout.flush()
         wandb.init(project=args.wandb_project, name=run_name, config=vars(args))
+        print("MAIN: WandB initialized", flush=True)
+        sys.stdout.flush()
+        weave.init(args.wandb_project)
+        print("MAIN: Weave initialized", flush=True)
+        sys.stdout.flush()
 
     # Initialize Ray
-    ray.init(address="local", include_dashboard=False, ignore_reinit_error=True)
+    print("MAIN: Initializing Ray...", flush=True)
+    sys.stdout.flush()
+    ray.init(address="auto", include_dashboard=False, ignore_reinit_error=True)
+    print("MAIN: Ray initialized successfully", flush=True)
+    sys.stdout.flush()
 
-    # Prepare an HF checkpoint for vLLM to load
-    logging_dir = f"{args.experiment_dir}/es_lora_async_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    base_model_path = f"{logging_dir}/base_model"
-    if os.path.exists(base_model_path): shutil.rmtree(base_model_path)
-    os.makedirs(base_model_path, exist_ok=True)
-
-    print("--- Preparing Initial Master LoRA Checkpoint ---")
+    print("--- Preparing Initial Master LoRA Checkpoint ---", flush=True)
+    sys.stdout.flush()
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
@@ -478,23 +692,38 @@ def main(args: Args):
         task_type="CAUSAL_LM"
     )
 
+    # Load on CPU solely to extract PEFT shapes and config for the Head Node's logic.
+    # We do NOT save this to disk for the workers; they will load 'args.model_name' directly.
+    print("MAIN: Loading base model to CPU for structure extraction...", flush=True)
+    sys.stdout.flush()
     base_model_pure_hf_host = AutoModelForCausalLM.from_pretrained(
         args.model_name, dtype=torch.float16, device_map="cpu", trust_remote_code=True
     )
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    tokenizer.save_pretrained(base_model_path)
-    base_model_pure_hf_host.save_pretrained(base_model_path) 
+    print("MAIN: Base model loaded", flush=True)
+    sys.stdout.flush()
 
+    # Create PEFT model locally to capture shapes
+    print("MAIN: Creating PEFT model wrapper...", flush=True)
+    sys.stdout.flush()
     peft_model = get_peft_model(base_model_pure_hf_host, lora_config)
     peft_model.print_trainable_parameters()
+
+    # Capture initial states to broadcast to workers
+    print("MAIN: Capturing PEFT state dict...", flush=True)
+    sys.stdout.flush()
     peft_state_dict = copy.deepcopy(peft_model.state_dict())
-    peft_params_dict = {name: param for name, param in peft_model.named_parameters()}
-    # print(f"{[(name, x.shape) for name, x in peft_model.named_parameters()]=}")
     peft_shapes_dict = {name: x.shape for name, x in peft_model.named_parameters() if name.endswith(".base_layer.weight")}
+    lora_config_dict = lora_config.to_dict()
+    if "target_modules" in lora_config_dict and isinstance(lora_config_dict["target_modules"], (set, tuple)):
+        lora_config_dict["target_modules"] = list(lora_config_dict["target_modules"])
+
+    print("MAIN: Cleaning up CPU model...", flush=True)
+    sys.stdout.flush()
     del base_model_pure_hf_host
     gc.collect()
     if torch.cuda.is_available(): torch.cuda.empty_cache()
-    print("Base Checkpoint ready.")
+    print("Base Checkpoint structure ready.", flush=True)
+    sys.stdout.flush()
 
     # Task Factory
     if args.task == "zeros":
@@ -550,6 +779,7 @@ def main(args: Args):
     else:
         raise ValueError(f"Unknown task: {args.task}")
     
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     sampling_params = SamplingParams(
         temperature=args.temperature,
         seed=args.base_seed,
@@ -585,20 +815,49 @@ def main(args: Args):
         print(f"Training on {args.task}, evaluating on {eval_task.split_names}.")
 
     # Launch engines
-    engines, pgs = launch_engines(args.num_engines, base_model_path, args.population_size, args.lora_r)
-    print("Engines launched successfully.")
+    print(f"MAIN: Launching {args.num_engines} vLLM engines...", flush=True)
+    sys.stdout.flush()
+    engines, pgs = launch_engines(args.num_engines, args.model_name, args.population_size, args.lora_r)
+    print("Engines launched successfully.", flush=True)
+    sys.stdout.flush()
 
     # Init inter-engine communicator once
     print("Initializing inter-engine NCCL group...")
-    master_address = get_ip()
-    master_port = get_open_port()
-    ray.get([
+    
+    # 1. Ask Engine 0 (Rank 0) for its IP and a free port.
+    #    collective_rpc returns a list of results (one per TP worker). 
+    #    Since TP=1, we take the first element [0].
+    master_info = ray.get(engines[0].collective_rpc.remote("get_transport_info", args=()))[0]
+    master_address, master_port = master_info
+    print(f"Rank 0 determined Master Address: {master_address}, Port: {master_port}")
+
+    # 2. Broadcast this address/port to ALL engines so they can connect/bind.
+    init_results = ray.get([
         engines[i].collective_rpc.remote(
             "init_inter_engine_group", args=(master_address, master_port, i, args.num_engines)
         )
         for i in range(args.num_engines)
     ])
-    print("NCCL group initialized.")
+    # Verify all engines initialized successfully
+    for i, result in enumerate(init_results):
+        if not result[0]:  # collective_rpc returns a list, take first element
+            raise RuntimeError(f"NCCL group initialization failed on engine {i}!")
+    print("NCCL group initialized successfully on all engines.")
+
+    # --- Setup Local LoRA Generation on Workers ---
+    print("Broadcasting initial LoRA state to workers for local generation...")
+    # We pass the initial state dict, shapes, and config so workers can regenerate adapters locally
+    peft_state_dict_ref = ray.put(peft_state_dict)
+    peft_shapes_dict_ref = ray.put(peft_shapes_dict)
+    lora_config_dict_ref = ray.put(lora_config_dict)
+    
+    ray.get([
+        engines[i].setup_local_lora_generation.remote(
+            peft_state_dict_ref, peft_shapes_dict_ref, lora_config_dict_ref, i
+        )
+        for i in range(args.num_engines)
+    ])
+    print("Workers configured for local LoRA generation.")
 
     def sig_handler(sig, frame):
         sys.exit(0)
@@ -608,9 +867,13 @@ def main(args: Args):
 
     print("\n--- Starting ASYNCHRONOUS ES Training Loop ---")
 
-    lora_paths = [
-        os.path.join(LORA_POPULATION_PATH, f"pop_{pop_idx}") for pop_idx in range(args.population_size)
-    ]
+    # We map indices to engines. Engine i handles indices [i*batch ... (i+1)*batch]
+    # We create a list of indices lists to send to workers
+    engine_pop_indices = []
+    for i in range(args.num_engines):
+        indices = list(range(i * loras_per_engine, (i + 1) * loras_per_engine))
+        engine_pop_indices.append(indices)
+
     lora_int_id = 1
     total_time = time.time()
 
@@ -671,39 +934,41 @@ def main(args: Args):
             eval_time = time.time() - eval_start
             if args.verbose: print(f"EVAL complete in {eval_time:.4f}s")
 
-        # 1. Create and save population of noisy LoRA adapters
+        # 1. Generate local LoRA adapters directly on the workers
         if es_step % args.steps_per_adapter == 0:
             lora_gen_start = time.time()
-            if args.verbose: print(f"Creating and saving {args.population_size} noisy LoRA adapters...")
-            create_lora_adapter_files(
-                peft_model, peft_params_dict, peft_state_dict, peft_shapes_dict, adapter_paths, es_step, args
-            )
+            if args.verbose: print(f"Triggering distributed LoRA generation on {args.num_engines} engines...")
+            
+            # Parallel call to all engines to generate their specific adapters
+            # Each engine returns the list of PATHS it generated locally
+            # These paths are valid on the worker node, but maybe not on head node.
+            # We use these paths to construct LoRARequests that are sent BACK to the same worker.
+            engine_paths = ray.get([
+                engines[i].generate_local_adapters.remote(
+                    engine_pop_indices[i], es_step, args
+                )
+                for i in range(args.num_engines)
+            ])
+            
             lora_gen_time = time.time() - lora_gen_start
-            if args.verbose: print(f"LoRA adapter generation complete in {lora_gen_time:.4f}s")
+            if args.verbose: print(f"Distributed LoRA adapter generation complete in {lora_gen_time:.4f}s")
         else:
             lora_gen_time = 0.0
-
-        lora_requests = []
-        for pop_idx, lora_path in enumerate(lora_paths):
-            lora_requests.append(
-                LoRARequest(
-                    lora_name=f"adapter_{pop_idx}",
-                    lora_int_id=lora_int_id,
-                    lora_path=lora_path
-                )
-            )
-            lora_int_id += 1
+            # If we didn't regenerate, we need to reconstruct paths logic to ensure requests are correct
+            # We assume paths haven't changed if step hasn't changed enough
+            # Important: Use rank-specific paths (each engine has its own /dev/shm directory)
+            engine_paths = []
+            for i in range(args.num_engines):
+                paths = [os.path.join(f"{LORA_POPULATION_PATH}_{i}", f"pop_{idx}") for idx in engine_pop_indices[i]]
+                engine_paths.append(paths)
 
         # 2. Evaluate Population
         vllm_start = time.time()
         prompts, answers = task.get_batch()
-        repeated_lora_requests = []
-        repeated_prompts = []
-        for lora_request in lora_requests:
-            repeated_lora_requests.extend([lora_request] * len(prompts))
-            repeated_prompts.extend(prompts)
-        requests_per_engine = loras_per_engine * len(prompts)
-        assert requests_per_engine == len(repeated_prompts) // args.num_engines
+        
+        # Prepare requests per engine.
+        # Note: engine_paths[i] contains paths relevant to engine i.
+        # We need to construct requests such that engine i gets requests pointing to engine_paths[i]
         
         task_ref = ray.put(task)
         answers_ref = ray.put(answers)
@@ -711,22 +976,50 @@ def main(args: Args):
 
         for engine_idx in range(args.num_engines):
             llm = engines[engine_idx]
-            engine_lora_requests = repeated_lora_requests[
-                engine_idx * requests_per_engine : (engine_idx + 1) * requests_per_engine
-            ]
-            engine_prompts = repeated_prompts[
-                engine_idx * requests_per_engine : (engine_idx + 1) * requests_per_engine
-            ]
-
+            
+            # Paths allocated to this engine
+            local_paths = engine_paths[engine_idx]
+            
+            # Construct LoRA requests for this engine
+            # Since we iterate sequentially, we need to calculate IDs carefully if we want unique global IDs
+            # though vLLM only cares about uniqueness within a batch usually.
+            # We'll calculate IDs based on pop_idx
+            
+            engine_lora_requests = []
+            pop_indices = engine_pop_indices[engine_idx]
+            
+            # Expand for batch size (prompts)
+            # Logic: We have N adapters. We have M prompts.
+            # We want to run every adapter on every prompt.
+            # vLLM `generate` list inputs: [prompt1+adapterA, prompt2+adapterA, ..., prompt1+adapterB...]
+            
+            # Create list of (prompt, lora_req) tuples to keep order aligned
+            engine_batch_prompts = []
+            engine_batch_lora_reqs = []
+            
+            for path_idx, lora_path in enumerate(local_paths):
+                # Unique ID for cache: pop_id + step (to invalidate old cache if needed, though folder overwrite handles it mostly)
+                pop_id = pop_indices[path_idx]
+                req = LoRARequest(
+                    lora_name=f"adapter_{pop_id}",
+                    lora_int_id=pop_id + 1 + (es_step * 10000), # Ensure ID changes if weight changes
+                    lora_path=lora_path
+                )
+                
+                # Repeat for all prompts
+                engine_batch_lora_reqs.extend([req] * len(prompts))
+                engine_batch_prompts.extend(prompts)
+            
             # Launch the remote task (non-blocking)
             ref = llm.generate_and_score.remote(
-                engine_prompts, 
+                engine_batch_prompts, 
                 sampling_params, 
-                lora_requests=engine_lora_requests,
+                lora_requests=engine_batch_lora_reqs,
                 task_obj=task_ref,
                 answers=answers_ref
             )
             all_refs.append(ref)
+            
         # GATHER: Wait for ALL evaluations to complete (single blocking call)
         if args.verbose: print(f"Waiting for {len(all_refs)} asynchronous evaluations to complete...")
         results = ray.get(all_refs)
@@ -792,10 +1085,54 @@ def main(args: Args):
         if args.verbose: print(f"Applied ES update on Engine 0 in {update_time:.4f}s")
 
         # 4. Broadcast updated weights
+        print("BROADCAST: Starting weight broadcast to all engines...", flush=True)
+        sys.stdout.flush()
         broadcast_start = time.time()
-        ray.get([e.collective_rpc.remote("broadcast_all_weights", args=(0,)) for e in engines])
+        print(f"BROADCAST: Calling broadcast_all_weights on {len(engines)} engines...", flush=True)
+        sys.stdout.flush()
+
+        # Create remote calls
+        broadcast_refs = []
+        for i, e in enumerate(engines):
+            print(f"BROADCAST: Dispatching call to engine {i}...", flush=True)
+            sys.stdout.flush()
+            ref = e.collective_rpc.remote("broadcast_all_weights", args=(0,))
+            broadcast_refs.append(ref)
+            print(f"BROADCAST: Engine {i} call dispatched (ref: {ref})", flush=True)
+            sys.stdout.flush()
+
+        print(f"BROADCAST: All {len(broadcast_refs)} calls dispatched, waiting for results...", flush=True)
+        sys.stdout.flush()
+        broadcast_results = ray.get(broadcast_refs)
+        print(f"BROADCAST: Received results from all engines", flush=True)
+        sys.stdout.flush()
+
+        # Check if any engine failed NCCL broadcast
+        failed_engines = [i for i, result in enumerate(broadcast_results) if not result[0]]
+
+        if failed_engines:
+            if args.verbose:
+                print(f"NCCL broadcast failed on engines {failed_engines}. Falling back to Ray-based broadcast...")
+
+            # Fallback: use Ray to broadcast weights
+            # Get state dict from engine 0
+            state_dict_refs = ray.get(engines[0].collective_rpc.remote("get_model_state_dict", args=()))
+            state_dict = state_dict_refs[0]  # collective_rpc returns list
+
+            # Broadcast via Ray's object store
+            state_dict_ref = ray.put(state_dict)
+
+            # Set state dict on all other engines
+            ray.get([
+                engines[i].collective_rpc.remote("set_model_state_dict", args=(state_dict_ref,))
+                for i in range(1, args.num_engines)  # Skip engine 0 (source)
+            ])
+
         broadcast_time = time.time() - broadcast_start
-        if args.verbose: print(f"Broadcasted updated weights to all engines in {broadcast_time:.4f}s (NCCL sync)")
+        method = "Ray" if failed_engines else "NCCL"
+        if args.verbose:
+            print(f"Broadcasted updated weights to all engines in {broadcast_time:.4f}s ({method})", flush=True)
+            sys.stdout.flush()
 
         # 5. Logging and WandB
         total_iter_end = time.time()
@@ -822,14 +1159,27 @@ def main(args: Args):
             })
         if args.verbose:
             total_time2 = vllm_time + aggregation_time + lora_gen_time + update_time + broadcast_time
-            print(f"TIMES: total: {iter_time:.4f}s (or {total_time2}s),  LoRA gen: {lora_gen_time:.4f}s, vLLM+Score: {vllm_time:.4f}s, Aggregation: {aggregation_time:.4f}s, ES update: {update_time:.4f}s, broadcast: {broadcast_time:.4f}s")
+            print(f"TIMES: total: {iter_time:.4f}s (or {total_time2}s),  LoRA gen: {lora_gen_time:.4f}s, vLLM+Score: {vllm_time:.4f}s, Aggregation: {aggregation_time:.4f}s, ES update: {update_time:.4f}s, broadcast: {broadcast_time:.4f}s", flush=True)
+            sys.stdout.flush()
 
         fitnesses_so_far.append(mean_fitness)
-        print(f"\n---\nFitnesses so far: {fitnesses_so_far}\n---\n")
-        print(f"======= ES Step {es_step} finished =======\n")
+        print(f"\n---\nFitnesses so far: {fitnesses_so_far}\n---\n", flush=True)
+        print(f"======= ES Step {es_step} finished =======\n", flush=True)
+        sys.stdout.flush()
 
     print("\n--- ES Training Complete ---")
 
 if __name__ == "__main__":
+    print("=" * 80, flush=True)
+    print("SCRIPT STARTED - Parsing arguments...", flush=True)
+    print("=" * 80, flush=True)
+    sys.stdout.flush()
+
     args = tyro.cli(Args)
+
+    print("=" * 80, flush=True)
+    print("ARGUMENTS PARSED - Starting main function...", flush=True)
+    print("=" * 80, flush=True)
+    sys.stdout.flush()
+
     main(args)

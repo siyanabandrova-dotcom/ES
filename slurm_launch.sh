@@ -2,7 +2,7 @@
 
 #SBATCH --job-name=es_lora_nccl   # A name for your job
 #SBATCH --gpus=1                  # Request 1 GPU (adjust as needed)
-#SBATCH --time=24:00:00           # Time limit hrs:min:sec (from your srun)
+#SBATCH --time=8:00:00           # Time limit hrs:min:sec (from your srun)
 #SBATCH --output=/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/logs/es_lora_%j.log    # Log file path (%u is user, %j is job ID)
 
 # --- Create logs directory if it doesn't exist ---

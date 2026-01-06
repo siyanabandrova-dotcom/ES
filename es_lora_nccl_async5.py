@@ -29,8 +29,10 @@ from safetensors.torch import save_file
 from tasks import MathTask, CountdownTask, ZerosTask, MathTask2, RandomTask
 
 # Default Hyperparameters
-EXPERIMENT_DIR = "/dev/shm/outputs_es_lora"
-LORA_POPULATION_PATH = "/dev/shm/es_lora_population_async"
+# Use shared filesystem for multi-node compatibility
+SCRATCH_DIR = os.environ.get("SCRATCH", "/tmp")
+EXPERIMENT_DIR = f"{SCRATCH_DIR}/outputs_es_lora"
+LORA_POPULATION_PATH = f"{SCRATCH_DIR}/es_lora_population_async"
 
 @dataclass
 class Args:
@@ -64,9 +66,14 @@ class Args:
     steps_per_eval: int = 10 # -1 to disable
     eval_batch_size: int = 16 # Number of episodes/problems to run during eval
 
+    # --- Multi-node Config ---
+    ray_address: str = "auto"  # "auto" for multi-node, "local" for single node
+    num_nodes: int = 1  # Number of nodes to use
+    gpus_per_node: int = None  # GPUs per node (if None, auto-detect)
+
     # --- WandB ---
     use_wandb: bool = False
-    wandb_project: str = "hyperscalees-vllm-nccl"
+    wandb_project: str = "hyperscalees-vllm-multinode"
     name_prefix: str = f"debug"
 
 
@@ -130,7 +137,9 @@ def _stateless_init_process_group(master_address, master_port, gpu_rank, world_s
     except ImportError:
         print("Warning: vLLM distributed modules not found. NCCL features will not work.")
         return None
-        
+
+    # All ranks use the master_address to connect to the TCPStore
+    # StatelessProcessGroup.create internally handles the server/client logic
     pg = StatelessProcessGroup.create(
         host=master_address, port=master_port, rank=gpu_rank, world_size=world_size
     )
@@ -259,6 +268,11 @@ class WorkerExtension:
         gc.collect()
         return True
     
+    def get_node_ip(self):
+        """Get the IP address of the node where this actor is running."""
+        from vllm.utils import get_ip
+        return get_ip()
+
     def init_inter_engine_group(self, master_address: str, master_port: int, gpu_rank: int, world_size: int):
         self.device = self.model_runner.device
         self.gpu_rank = gpu_rank
@@ -365,10 +379,33 @@ class ESNcclLLM(LLM):
 
         return fitness_list, info, responses_for_logging
 
-def launch_engines(num_engines, model_name, population_size, lora_r):
-    """Launches multiple vLLM engines, each dedicated to one GPU via Ray Placement Groups."""
+def launch_engines(num_engines, model_name, population_size, lora_r, spread_across_nodes=False):
+    """Launches multiple vLLM engines, each dedicated to one GPU via Ray Placement Groups.
+
+    Args:
+        num_engines: Number of vLLM engines to launch
+        model_name: Path to the model
+        population_size: Size of the ES population
+        lora_r: LoRA rank
+        spread_across_nodes: If True, use SPREAD strategy to distribute across nodes
+    """
     print(f"Creating {num_engines} placement groups (1 GPU each).")
-    pgs = [placement_group([{"GPU": 1, "CPU": 0}], lifetime="detached") for _ in range(num_engines)]
+
+    if spread_across_nodes:
+        # Use SPREAD strategy to distribute across nodes
+        from ray.util.placement_group import PlacementGroup
+        pgs = [
+            placement_group(
+                [{"GPU": 1, "CPU": 0}],
+                strategy="SPREAD",
+                lifetime="detached"
+            )
+            for _ in range(num_engines)
+        ]
+    else:
+        # Default PACK strategy (keeps on same node when possible)
+        pgs = [placement_group([{"GPU": 1, "CPU": 0}], lifetime="detached") for _ in range(num_engines)]
+
     ray.get([pg.ready() for pg in pgs])
 
     strategies = [
@@ -386,7 +423,7 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
             model=model_name,
             tensor_parallel_size=1,
             distributed_executor_backend="ray",
-            worker_extension_cls="es_lora_nccl_async2.WorkerExtension",
+            worker_extension_cls="es_lora_nccl_async5.WorkerExtension",
             dtype="float16",
             enable_prefix_caching=False,
             enforce_eager=False,
@@ -401,7 +438,23 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
 
 def main(args: Args):
     # --- Setup/Init ---
-    args.num_gpus = torch.cuda.device_count()
+    # Initialize Ray first to get accurate GPU count across nodes
+    print(f"Initializing Ray with address: {args.ray_address}")
+    ray.init(address=args.ray_address, include_dashboard=False, ignore_reinit_error=True)
+
+    # Get GPU count based on mode
+    if args.ray_address == "local":
+        # Single node mode
+        args.num_gpus = torch.cuda.device_count()
+        args.num_nodes = 1
+        args.gpus_per_node = args.num_gpus
+    else:
+        # Multi-node mode - get total GPUs from Ray cluster
+        if args.gpus_per_node is None:
+            # Auto-detect GPUs per node (assumes homogeneous nodes)
+            args.gpus_per_node = torch.cuda.device_count()
+        args.num_gpus = args.num_nodes * args.gpus_per_node
+
     args.num_engines = args.num_gpus
     assert args.population_size % 2 ==0, f"{args.population_size=} must be even for antithetic sampling."
     assert args.population_size % args.num_engines == 0, f"{args.population_size=} must be divisible by {args.num_engines=}."
@@ -458,9 +511,6 @@ def main(args: Args):
     run_name += f"-{int(time.time())}"
     if args.use_wandb:
         wandb.init(project=args.wandb_project, name=run_name, config=vars(args))
-
-    # Initialize Ray
-    ray.init(address="local", include_dashboard=False, ignore_reinit_error=True)
 
     # Prepare an HF checkpoint for vLLM to load
     logging_dir = f"{args.experiment_dir}/es_lora_async_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -585,13 +635,25 @@ def main(args: Args):
         print(f"Training on {args.task}, evaluating on {eval_task.split_names}.")
 
     # Launch engines
-    engines, pgs = launch_engines(args.num_engines, base_model_path, args.population_size, args.lora_r)
+    # Use SPREAD strategy for multi-node to distribute across nodes
+    spread_across_nodes = (args.num_nodes > 1)
+    engines, pgs = launch_engines(
+        args.num_engines,
+        base_model_path,
+        args.population_size,
+        args.lora_r,
+        spread_across_nodes=spread_across_nodes
+    )
     print("Engines launched successfully.")
 
     # Init inter-engine communicator once
     print("Initializing inter-engine NCCL group...")
-    master_address = get_ip()
+    # Get the IP address of the node where engine 0 (rank 0) is running
+    # This ensures that the TCPStore server binds to the correct address
+    master_address = ray.get(engines[0].collective_rpc.remote("get_node_ip"))
     master_port = get_open_port()
+
+    print(f"NCCL master address (engine 0 node): {master_address}:{master_port}")
     ray.get([
         engines[i].collective_rpc.remote(
             "init_inter_engine_group", args=(master_address, master_port, i, args.num_engines)
