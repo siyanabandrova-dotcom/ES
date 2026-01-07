@@ -31,7 +31,7 @@ The main script is `es_lora_multinode.py`. This is an almost single file impleme
 
 ## Launching jobs:
 
-`slurm_launch_multinode_n1.sh`, `slurm_launch_multinode_n2.sh`, and `slurm_launch_multinode_n4.sh` launch jobs on 1, 2, and 4 nodes respectively. (`slurm_launch_multigpu.sh` launches the old single-node version.)
+`slurm_launch_multinode_n1.sh` and `slurm_launch_multinode_n4.sh` launch jobs on 1 and 4 nodes respectively. (`slurm_launch_multigpu.sh` launches the old single-node version.)
 
 General for 4 nodes:
 
