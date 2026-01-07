@@ -3,7 +3,7 @@
 #SBATCH --job-name=eggroll_vllm
 #SBATCH --gpus=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/logs/multigpu-%j.log
+#SBATCH --output=/home/s5j/asims.s5j/Documents/esvllm-outer/hyperscale-es-vllm/logs/multigpu-%j.log
 #SBATCH --cpus-per-task=16
 
 # --- Create logs directory if it doesn't exist ---
