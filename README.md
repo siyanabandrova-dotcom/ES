@@ -6,12 +6,12 @@ Install uv: https://docs.isambard.ac.uk/user-documentation/guides/python/#uv-ins
 
 Then install vllm:
 ```shell
-$ cd $SCRATCH/uv_envs
-$ mkdir vllm_env
-$ cd vllm_env
-$ uv venv --seed -p=3.12
-$ source .venv/bin/activate(vllm_env)
-$ srun --gpus 1 uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/0.10.2/vllm
+cd $SCRATCH/uv_envs
+mkdir vllm_env
+cd vllm_env
+uv venv --seed -p=3.12
+source .venv/bin/activate(vllm_env)
+srun --gpus 1 uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/0.10.2/vllm
 ```
 
 
