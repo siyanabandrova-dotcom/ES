@@ -28,7 +28,7 @@ import wandb
 import weave
 from peft import LoraConfig, get_peft_model
 from vllm.lora.request import LoRARequest
-from safetensors.torch import save_file, load_file
+from safetensors.torch import save_file
 
 from tasks import MathTask, CountdownTask, ZerosTask, MathTask2, RandomTask
 
@@ -36,10 +36,7 @@ print("IMPORTS: All imports completed successfully", flush=True)
 print("=" * 80, flush=True)
 
 # Default Hyperparameters
-EXPERIMENT_DIR = os.path.expandvars("$SCRATCH/for_es_lora")
-# Use SLURM_JOB_ID to make path unique per job, avoiding conflicts from previous runs
-SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
-LORA_POPULATION_PATH = f"/dev/shm/es_lora_population_async_{SLURM_JOB_ID}"
+LORA_POPULATION_PATH = "/dev/shm/es_lora_population_async"
 
 @dataclass
 class Args:
@@ -76,11 +73,6 @@ class Args:
     use_wandb: bool = False
     wandb_project: str = "hyperscalees-vllm-multinode"
     name_prefix: str = f"debug"
-
-    # --- Checkpointing ---
-    save_freq: int = None  # None: saves at last step, -1: no saving
-    checkpoint_dir: str = None  # If None, will use EXPERIMENT_DIR/run_name/checkpoints
-    resume_from: str = None  # Path to checkpoint to resume from
 
     def __post_init__(self):
         if self.lora_alpha is None:
@@ -395,7 +387,7 @@ class ESNcclLLM(LLM):
         """
         adapter_paths = []
         pop_step = es_step // args.steps_per_adapter
-
+        
         # Ensure config is JSON serializable
         config_to_save = copy.deepcopy(self.lora_config_data)
         if "target_modules" in config_to_save and isinstance(config_to_save["target_modules"], (set, tuple)):
@@ -403,37 +395,7 @@ class ESNcclLLM(LLM):
 
         for pop_idx in population_indices:
             adapter_path = os.path.join(self.lora_storage_path, f"pop_{pop_idx}")
-
-            # Try to create directory with robust error handling
-            try:
-                os.makedirs(adapter_path, exist_ok=True)
-            except (PermissionError, OSError) as e:
-                print(f"WARNING: Failed to create {adapter_path}: {e}. Attempting cleanup and retry...", flush=True)
-                # Try to remove and recreate
-                try:
-                    import stat
-                    # Fix permissions on parent directory first
-                    if os.path.exists(self.lora_storage_path):
-                        try:
-                            os.chmod(self.lora_storage_path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
-                        except Exception as e_parent:
-                            print(f"WARNING: Could not chmod parent {self.lora_storage_path}: {e_parent}", flush=True)
-
-                    # Now fix the specific directory if it exists
-                    if os.path.exists(adapter_path):
-                        try:
-                            os.chmod(adapter_path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
-                            shutil.rmtree(adapter_path, ignore_errors=True)
-                        except Exception as e_dir:
-                            print(f"WARNING: Could not remove {adapter_path}: {e_dir}", flush=True)
-                            pass
-
-                    # Final attempt to create
-                    os.makedirs(adapter_path, exist_ok=True)
-                except Exception as e2:
-                    print(f"ERROR: Could not create adapter directory {adapter_path}: {e2}", flush=True)
-                    raise
-
+            os.makedirs(adapter_path, exist_ok=True)
             adapter_paths.append(adapter_path)
             
             # Save config
@@ -628,63 +590,6 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
     ]
     return engines, pgs
 
-def save_checkpoint(checkpoint_dir: str, es_step: int, model_state_dict: dict,
-                   task_state: dict, args: Args, fitnesses_so_far: list):
-    """
-    Save checkpoint including:
-    - Model weights
-    - Current ES step
-    - Task dataset state
-    - Training metrics
-    """
-    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_step_{es_step}")
-    os.makedirs(checkpoint_path, exist_ok=True)
-
-    # Save model weights
-    model_weights_path = os.path.join(checkpoint_path, "model_weights.safetensors")
-    save_file(model_state_dict, model_weights_path)
-
-    # Save training state
-    checkpoint_state = {
-        "es_step": es_step,
-        "args": vars(args),
-        "fitnesses_so_far": fitnesses_so_far,
-        "task_state": task_state,
-    }
-
-    # Save state as JSON
-    state_path = os.path.join(checkpoint_path, "training_state.json")
-    with open(state_path, "w") as f:
-        json.dump(checkpoint_state, f, indent=2)
-
-    print(f"Checkpoint saved to {checkpoint_path}", flush=True)
-
-def load_checkpoint(checkpoint_path: str):
-    """
-    Load checkpoint and return all saved state.
-    """
-    if not os.path.exists(checkpoint_path):
-        raise ValueError(f"Checkpoint path does not exist: {checkpoint_path}")
-
-    # Load training state
-    state_path = os.path.join(checkpoint_path, "training_state.json")
-    with open(state_path, "r") as f:
-        state = json.load(f)
-
-    # Load model weights
-    model_weights_path = os.path.join(checkpoint_path, "model_weights.safetensors")
-    model_state_dict = load_file(model_weights_path)
-
-    print(f"Checkpoint loaded from {checkpoint_path}", flush=True)
-    print(f"Resuming from ES step {state['es_step']}", flush=True)
-
-    return {
-        "model_state_dict": model_state_dict,
-        "es_step": state["es_step"],
-        "task_state": state.get("task_state", {}),
-        "fitnesses_so_far": state.get("fitnesses_so_far", []),
-    }
-
 def main(args: Args):
     print("MAIN: Entered main function", flush=True)
     sys.stdout.flush()
@@ -726,9 +631,8 @@ def main(args: Args):
     sys.stdout.flush()
 
     fitnesses_so_far = []
-    start_step = 0  # Will be updated if resuming from checkpoint
 
-    # set global random seed (may be overridden if resuming from checkpoint)
+    # set global random seed
     random.seed(args.base_seed)
     np.random.seed(args.base_seed)
     torch.manual_seed(args.base_seed)
@@ -763,17 +667,6 @@ def main(args: Args):
         weave.init(args.wandb_project)
         print("MAIN: Weave initialized", flush=True)
         sys.stdout.flush()
-
-    # Setup checkpoint directory
-    if args.checkpoint_dir is None:
-        args.checkpoint_dir = os.path.join(EXPERIMENT_DIR, run_name, "checkpoints")
-    else:
-        # Expand environment variables in user-provided path
-        args.checkpoint_dir = os.path.expandvars(args.checkpoint_dir)
-
-    if args.save_freq != -1:  # If checkpointing is enabled
-        os.makedirs(args.checkpoint_dir, exist_ok=True)
-        print(f"Checkpoints will be saved to: {args.checkpoint_dir}", flush=True)
 
     # Initialize Ray
     print("MAIN: Initializing Ray...", flush=True)
@@ -967,32 +860,6 @@ def main(args: Args):
     ])
     print("Workers configured for local LoRA generation.")
 
-    # --- Load Checkpoint if Resuming ---
-    checkpoint_model_state = None
-    if args.resume_from is not None:
-        print(f"\n--- Resuming from checkpoint: {args.resume_from} ---", flush=True)
-        checkpoint_data = load_checkpoint(args.resume_from)
-        start_step = checkpoint_data["es_step"] + 1  # Resume from next step
-        fitnesses_so_far = checkpoint_data["fitnesses_so_far"]
-        checkpoint_model_state = checkpoint_data["model_state_dict"]
-
-        # Restore task state (dataset position)
-        task_state = checkpoint_data.get("task_state", {})
-        if hasattr(task, 'restore_state') and task_state:
-            task.restore_state(task_state)
-            print(f"Task state restored", flush=True)
-
-        # Broadcast loaded weights to all engines
-        print("Broadcasting checkpoint weights to all engines...", flush=True)
-        checkpoint_model_state_ref = ray.put(checkpoint_model_state)
-        ray.get([
-            engines[i].collective_rpc.remote("set_model_state_dict", args=(checkpoint_model_state_ref,))
-            for i in range(args.num_engines)
-        ])
-        print(f"Checkpoint loaded. Resuming from step {start_step}", flush=True)
-    else:
-        print("Starting training from scratch", flush=True)
-
     def sig_handler(sig, frame):
         sys.exit(0)
 
@@ -1009,9 +876,8 @@ def main(args: Args):
 
     lora_int_id = 1
     total_time = time.time()
-    force_regen_adapters = (start_step > 0)  # Force regeneration on first step if resuming
 
-    for es_step in range(start_step, args.num_iterations):
+    for es_step in range(args.num_iterations):
         print(f"\n\n======= ES Step {es_step} / {args.num_iterations} =======")
         total_iter_start = time.time()
 
@@ -1072,15 +938,10 @@ def main(args: Args):
             if args.verbose: print(f"EVAL complete in {eval_time:.4f}s")
 
         # 1. Generate local LoRA adapters directly on the workers
-        should_generate_adapters = (es_step % args.steps_per_adapter == 0) or force_regen_adapters
-
-        if should_generate_adapters:
+        if es_step % args.steps_per_adapter == 0:
             lora_gen_start = time.time()
-            if force_regen_adapters:
-                print(f"Regenerating LoRA adapters (resuming from checkpoint)...", flush=True)
-                force_regen_adapters = False  # Only force on first iteration
             if args.verbose: print(f"Triggering distributed LoRA generation on {args.num_engines} engines...")
-
+            
             # Parallel call to all engines to generate their specific adapters
             # Each engine returns the list of PATHS it generated locally
             # These paths are valid on the worker node, but maybe not on head node.
@@ -1091,7 +952,7 @@ def main(args: Args):
                 )
                 for i in range(args.num_engines)
             ])
-
+            
             lora_gen_time = time.time() - lora_gen_start
             if args.verbose: print(f"Distributed LoRA adapter generation complete in {lora_gen_time:.4f}s")
         else:
@@ -1291,47 +1152,6 @@ def main(args: Args):
 
         fitnesses_so_far.append(mean_fitness)
         print(f"\n---\nFitnesses so far: {fitnesses_so_far}\n---\n", flush=True)
-
-        # --- Save Checkpoint ---
-        should_save = False
-        is_last_step = (es_step == args.num_iterations - 1)
-
-        if args.save_freq == -1:
-            # No checkpointing
-            should_save = False
-        elif args.save_freq is None:
-            # Save only at last step
-            should_save = is_last_step
-        else:
-            # Save every save_freq steps, and also at the last step
-            should_save = (es_step > 0 and es_step % args.save_freq == 0) or is_last_step
-
-        if should_save:
-            print(f"\n--- Saving checkpoint at step {es_step} ---", flush=True)
-            checkpoint_save_start = time.time()
-
-            # Get current model state from engine 0
-            model_state_refs = ray.get(engines[0].collective_rpc.remote("get_model_state_dict", args=()))
-            model_state_dict = model_state_refs[0]  # collective_rpc returns list
-
-            # Get task state (if task supports it)
-            task_state = {}
-            if hasattr(task, 'get_state'):
-                task_state = task.get_state()
-
-            # Save checkpoint
-            save_checkpoint(
-                checkpoint_dir=args.checkpoint_dir,
-                es_step=es_step,
-                model_state_dict=model_state_dict,
-                task_state=task_state,
-                args=args,
-                fitnesses_so_far=fitnesses_so_far
-            )
-
-            checkpoint_save_time = time.time() - checkpoint_save_start
-            print(f"Checkpoint saved in {checkpoint_save_time:.4f}s", flush=True)
-
         print(f"======= ES Step {es_step} finished =======\n", flush=True)
         sys.stdout.flush()
 

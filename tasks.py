@@ -72,7 +72,7 @@ class ZerosTask:
         return sum(c == "0" for c in generation)/self.max_tokens, None
     
 class RandomTask:
-    def __init__(self, batch_size, max_tokens, max_random_number, answer_format="none"):
+    def __init__(self, batch_size, max_tokens, max_random_number, seed, answer_format="none"):
         self.batch_size = batch_size
         self.max_tokens = max_tokens
         self.prompt = "Pick a random number between 1 and " + str(max_random_number) + " (inclusive)."
@@ -85,10 +85,11 @@ class RandomTask:
             raise ValueError(f"Unknown {self.ans_format=}")
         self.prompt = f"User: {self.prompt}\n\nAssistant:"
         self.max_random_number = max_random_number
+        self.rng = np.random.default_rng(seed)
 
     def get_batch(self):
         batch_prompts = [self.prompt for _ in range(self.batch_size)]
-        batch_answers = np.random.randint(1, self.max_random_number+1, size=self.batch_size).tolist()
+        batch_answers = self.rng.integers(1, self.max_random_number+1, size=self.batch_size).tolist()
         return batch_prompts, batch_answers
     
     def get_fitness(self, generation, answer):
@@ -114,7 +115,7 @@ def boxed_reward_fn(model_answer, gt_answer, fast=False,):
     return is_correct
 
 class MathTask2:
-    def __init__(self, batch_size, tokenizer=None, dataset_name="gsm8k", datset_size=None, apply_chat_template=False):
+    def __init__(self, batch_size, seed, tokenizer=None, dataset_name="gsm8k", datset_size=None, apply_chat_template=False):
         self.dataset_name = dataset_name
         dataset_names_dict = {
             "gsm8k": ("axon-rl/GSM-8k", "train", True),
@@ -129,6 +130,7 @@ class MathTask2:
         self.is_train = is_train
         if is_train:
             self.dataset = load_dataset(dataset_name, split=splits)
+            self.dataset = self.dataset.shuffle(seed=seed)
             if datset_size is not None:
                 self.dataset = self.dataset.select(range(datset_size))
         else:
@@ -136,12 +138,14 @@ class MathTask2:
             self.dataset = load_dataset(dataset_name)
             # Add gsm8k and asdiv subsets for math-eval
             if dataset_name == "axon-rl/math-eval":
-                gsm8k_subset = load_dataset("axon-rl/GSM-8k", split="train").select(range(500))
+                gsm8k_subset = load_dataset("axon-rl/GSM-8k", split="train").shuffle(seed=seed).select(range(500))
                 self.dataset['gsm8k'] = gsm8k_subset
                 self.split_names.append('gsm8k')
-                asdiv_subset = load_dataset("axon-rl/ASDIV-2k", split="train").select(range(500))
+                asdiv_subset = load_dataset("axon-rl/ASDIV-2k", split="train").shuffle(seed=seed).select(range(500))
                 self.dataset['asdiv'] = asdiv_subset
                 self.split_names.append('asdiv')
+            for split in self.split_names:
+                self.dataset[split] = self.dataset[split].shuffle(seed=seed)
         self.apply_chat_template = apply_chat_template
         self.tokenizer = tokenizer
         self.batch_size = batch_size
@@ -209,8 +213,9 @@ class MathTask2:
         return 1.0 if is_correct else 0.0, model_answer
 
 class MathTask:
-    def __init__(self, batch_size, dataset_name="openai/gsm8k", split="train", datset_size=None, answer_format="none"):
+    def __init__(self, batch_size, seed, dataset_name="openai/gsm8k", split="train", datset_size=None, answer_format="none"):
         self.dataset = load_dataset(dataset_name, "main", split=split)
+        self.dataset = self.dataset.shuffle(seed=seed)
         if datset_size is not None:
             self.dataset = self.dataset.select(range(datset_size))
         assert batch_size <= len(self.dataset), f"{batch_size=} must be <= {len(self.dataset)=}"
@@ -246,9 +251,10 @@ class MathTask:
     
 
 class CountdownTask:
-    def __init__(self, batch_size, datset_size=None, end_token: Optional[str] = None):
+    def __init__(self, batch_size, seed, datset_size=None, end_token: Optional[str] = None):
         data_path = "countdown.json"
         self.dataset = load_dataset("json", data_files=data_path, split="train")
+        self.dataset = self.dataset.shuffle(seed=seed)
         print(f"{self.dataset=}")
         if datset_size is not None:
             self.dataset = self.dataset.select(range(datset_size))

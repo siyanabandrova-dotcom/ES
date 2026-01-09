@@ -4,7 +4,7 @@
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/home/s5j/asims.s5j/Documents/esvllm-outer/hyperscale-es-vllm/logs/multinode_n4-%j.log
+#SBATCH --output=/home/s5j/asims.s5j/Documents/esvllm-outer/hyperscale-es-vllm/logs/multinode_n16-%j.log
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks-per-node=1
 
@@ -39,54 +39,18 @@ sub_dataset_size=${15}
 name_prefix=${16}
 
 ### Run with:
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh <sigma> <learning_rate> <max_tokens> <model_name> <population_size> <steps_per_adapter> <lora_r> <task> <normalize_with_std> <prompt_batch_size> <samples_per_prompt> <temperature> <pass_at_k> <steps_per_eval> <sub_dataset_size> <name_prefix>
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh <sigma> <learning_rate> <max_tokens> <model_name> <population_size> <steps_per_adapter> <lora_r> <task> <normalize_with_std> <prompt_batch_size> <samples_per_prompt> <temperature> <pass_at_k> <steps_per_eval> <sub_dataset_size> <name_prefix>
 
 ### Examples:
 
-### Small debug run
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 1024 "Qwen/Qwen3-0.6B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-multinode-test6_4"
+### 8B Baseline
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh 0.001 0.001 8192 "Qwen/Qwen3-8B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A16_8Bp256"
 
-### Zeros task
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "zeros" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-multinode-test6_4"
+### gem 4B Baseline
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh 0.001 0.001 4096 "Qwen/Qwen3-4B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A16_4Bp256"
 
-### Baseline
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4"
-
-### Smaller pop size
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_p256"
-
-### Zero learning rate
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.0 4096 "Qwen/Qwen3-1.7B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A_4_zeroLR"
-
-### Higher rank
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B" 1024 4 8 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_rank8"
-
-### Pass@k
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 16 4 0.7 "pass-at-k" -1 "null" "A4_k"
-
-### 4B
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-4B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_4B"
-
-### 8B
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-8B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_8B"
-
-### 14B
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-14B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_14B"
-
-### 32B
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-32B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_32B"
-
-### Random task
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 512 "Qwen/Qwen3-1.7B" 256 4 1 "random-boxed" "normalize-with-std" 16 4 0.7 "no-pass-at-k" 10 "null" "A4_rand_p256"
-
-### Random task pass@k
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 512 "Qwen/Qwen3-1.7B" 256 4 1 "random-boxed" "normalize-with-std" 16 4 0.7 "pass-at-k" 10 "null" "A4_rand_K"
-
-### Larger models
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-4B" 32 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A_4_4BP32"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-8B" 32 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A_4_8BP32"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-14B" 32 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A_4_14BP32"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-32B" 32 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A_4_32BP32"
+### 1.7B Baseline
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A16_1.7Bp256"
 
 # --- Echo parameters for logging ---
 echo "Parameters:"
@@ -130,10 +94,8 @@ cd $HOME/Documents/esvllm-outer/hyperscale-es-vllm
 
 # --- Clean up leftover shared memory directories from previous jobs (on all nodes) ---
 echo "Cleaning up /dev/shm from previous jobs on all nodes..."
-echo "Current job ID: $SLURM_JOB_ID"
 srun --nodes=$SLURM_JOB_NUM_NODES --ntasks=$SLURM_JOB_NUM_NODES bash -c '
     echo "$(hostname): Cleaning /dev/shm..."
-    # Remove any old es_lora directories (from previous jobs)
     chmod -R u+rwx /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
     rm -rf /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
     echo "$(hostname): Cleanup complete"

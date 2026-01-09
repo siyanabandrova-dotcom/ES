@@ -2,20 +2,50 @@
 
 ## To install on isambard:
 
+Install miniforge: https://docs.isambard.ac.uk/user-documentation/guides/python/#conda-installing-and-using-miniforge (and ensure in conda `(base)` env).
+
+Ensure paths set in bashrc:
+
+```bash
+export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+```
+
 Install uv: https://docs.isambard.ac.uk/user-documentation/guides/python/#uv-installation-and-usage
 
 Then install vllm:
 ```shell
-cd $SCRATCH && mkdir uv_envs && cd uv_envs && mkdir vllm_env && cd $SCRATCH/uv_envs/vllm_env
+cd $SCRATCH && mkdir uv_envs && cd uv_envs && mkdir vllm_env
+cd $SCRATCH/uv_envs/vllm_env
 uv venv --seed -p=3.12
 source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate
-srun --gpus 1 uv pip install vllm==0.11.0 --extra-index-url https://wheels.vllm.ai/0.10.2/vllm
+srun --gpus 1 uv pip install vllm==0.11.0 --torch-backend=auto --extra-index-url https://wheels.vllm.ai/0.10.2/vllm
+uv pip install tyro
+uv pip install wandb
+uv pip install weave
+uv pip install peft
+uv pip install datasets
+uv pip install gem-llm
+uv pip install pylatexenc
+```
+
+Download model to cache, eg:
+
+```python
+source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate
+srun --pty bash
+python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+model_name = "Qwen/Qwen3-8B"
+model, tokenizer = AutoModelForCausalLM.from_pretrained(model_name), AutoTokenizer.from_pretrained(model_name)
 ```
 
 
 ## Code:
 
 The main script is `es_lora_multinode.py`. This is an almost single file implementation, apart from the tasks which are in `tasks.py`. (`es_lora_multigpu.py` is an old single-node version of the code.)
+
+`es_lora_multinode_2.py` is the old version of the code without checkpoint saving [09jan25]
 
 
 ## Tasks:
