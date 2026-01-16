@@ -70,8 +70,7 @@ class Args:
     base_seed: int = 0
     sub_dataset_size: int = None
     steps_per_eval: int = 10 # -1 to disable
-    eval_batch_size: int = 32
-    es_update_chunk_size: int = None  # Auto-select based on lora_r if None
+    eval_batch_size: int = 32 
 
     # --- WandB ---
     use_wandb: bool = False
@@ -94,9 +93,8 @@ LORA_TARGET_MODULES = [
 ]
 
 def map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, device: torch.device):
-    # Keep on CPU to avoid OOM - will move to GPU when applying
     vllm_updates_dict = {
-        name: torch.zeros(shape, device='cpu', dtype=torch.float32) for name, shape in vllm_shapes_dict.items()
+        name: torch.zeros(shape, device='cpu') for name, shape in vllm_shapes_dict.items()
         if name.endswith(".base_layer.weight")
     }
     for peft_name, weight_update in peft_updates_dict.items():
@@ -197,105 +195,34 @@ class WorkerExtension:
         if self.gpu_rank != 0:
             return False
 
-        # IMPORTANT: Keep peft_updates_dict on CPU to avoid OOM
-        # vLLM already uses 94-95GB, so we can't allocate more on GPU
-        # We'll process layer-by-layer and move only working tensors to GPU
-        peft_updates_dict = {name: torch.zeros(x, device='cpu', dtype=torch.float32) for name, x in peft_shapes_dict.items()}
+        peft_updates_dict = {name: torch.zeros(x, device='cpu') for name, x in peft_shapes_dict.items()}
         vllm_shapes_dict = {name: x.shape for name, x in self.model_runner.model.named_parameters()}
-
+        
         pop_step = es_step // args.steps_per_adapter
+        for pop_pair_idx in range(args.population_size // 2):
+            pop_idx_1 = pop_pair_idx * 2
+            pop_idx_2 = pop_pair_idx * 2 + 1
 
-        # Batch process per layer to reduce Python loop overhead
-        # For low-rank updates, we can use rank-1 factorization to save memory:
-        # Instead of computing B @ A and accumulating, we compute sum(fitness_diff * B) @ sum(A)
-        # But we need the cross-product, so we use an optimized batched approach
+            fitness1 = normalized_fitnesses[pop_idx_1]
+            fitness2 = normalized_fitnesses[pop_idx_2]
 
-        # Adaptive chunk size based on available memory and lora_r
-        # For low rank (r=1), can use larger chunks. For high rank, use smaller chunks.
-        if args.es_update_chunk_size is not None:
-            chunk_size = min(args.es_update_chunk_size, args.population_size // 2)
-        elif args.lora_r <= 2:
-            chunk_size = min(128, args.population_size // 2)
-        elif args.lora_r <= 8:
-            chunk_size = min(64, args.population_size // 2)
-        else:
-            chunk_size = min(32, args.population_size // 2)
-
-        for layer_idx, (peft_name, weight_shape) in enumerate(peft_shapes_dict.items()):
-            lora_b_shape, lora_a_shape = (weight_shape[0], args.lora_r), (args.lora_r, weight_shape[1])
-
-            # Accumulate layer updates on GPU using low-rank factorization
-            # Update = sum_i fitness_i * B_i @ A_i
-            # For memory efficiency with low rank, accumulate B and A separately then multiply
-            layer_update = torch.zeros(weight_shape, device=self.device, dtype=torch.float32)
-
-            # Process population in chunks for better GPU utilization
-            for chunk_start in range(0, args.population_size // 2, chunk_size):
-                chunk_end = min(chunk_start + chunk_size, args.population_size // 2)
-                actual_chunk_size = chunk_end - chunk_start
-
-                # Generate all noise for this chunk at once
-                noise_a_list = []
-                noise_b_list = []
-                fitness_diffs = []
-
-                for pop_pair_idx in range(chunk_start, chunk_end):
-                    pop_idx_1 = pop_pair_idx * 2
-                    pop_idx_2 = pop_pair_idx * 2 + 1
-
-                    fitness_diff = normalized_fitnesses[pop_idx_1] - normalized_fitnesses[pop_idx_2]
-                    fitness_diffs.append(fitness_diff)
-
-                    noise_a, noise_b = get_rng_noise(
-                        base_seed=args.base_seed,
-                        num_pop_pairs=args.population_size//2,
-                        pop_pair_idx=pop_idx_1//2,
-                        num_layers=len(peft_shapes_dict.keys()),
-                        layer_idx=layer_idx,
-                        step=pop_step,
-                        shapes=[lora_a_shape, lora_b_shape],
-                    )
-                    noise_a_list.append(noise_a)
-                    noise_b_list.append(noise_b)
-
-                # Stack and move to GPU in one operation
-                noise_a_batch = torch.stack(noise_a_list).to(self.device) * math.sqrt(args.sigma)
-                noise_b_batch = torch.stack(noise_b_list).to(self.device) * math.sqrt(args.sigma)
-                fitness_diffs_tensor = torch.tensor(fitness_diffs, device=self.device, dtype=noise_a_batch.dtype)
-
-                # OPTIMIZATION: For rank-1, use outer product which is more memory efficient
-                # Update = sum_i fitness_i * (B_i @ A_i) = sum_i fitness_i * outer(b_i, a_i)
-                # where B_i is (out_dim, 1) and A_i is (1, in_dim)
-                if args.lora_r == 1:
-                    # Squeeze to get vectors: (chunk_size, out_dim) and (chunk_size, in_dim)
-                    noise_b_vec = noise_b_batch.squeeze(2)  # (chunk_size, out_dim, 1) -> (chunk_size, out_dim)
-                    noise_a_vec = noise_a_batch.squeeze(1)  # (chunk_size, 1, in_dim) -> (chunk_size, in_dim)
-
-                    # Weight by fitness: (chunk_size, out_dim) * (chunk_size, 1)
-                    weighted_b = noise_b_vec * fitness_diffs_tensor.unsqueeze(1)
-
-                    # Compute weighted outer product sum: (out_dim, chunk_size) @ (chunk_size, in_dim)
-                    weighted_noise = torch.mm(weighted_b.t(), noise_a_vec)
-                else:
-                    # General case: Batch matmul for higher rank
-                    # (chunk_size, out_dim, r) @ (chunk_size, r, in_dim) -> (chunk_size, out_dim, in_dim)
-                    noise_batch = torch.bmm(noise_b_batch, noise_a_batch)
-
-                    # Weighted sum: multiply each noise by fitness_diff and sum
-                    weighted_noise = (noise_batch * fitness_diffs_tensor.view(-1, 1, 1)).sum(dim=0)
-                    del noise_batch
-
-                layer_update.add_(weighted_noise)
-
-                # Clear intermediate tensors to free memory
-                del noise_a_batch, noise_b_batch, weighted_noise
-                if chunk_start % (chunk_size * 4) == 0:  # Periodic cleanup
-                    torch.cuda.empty_cache()
-
-            # Move completed layer update back to CPU to free GPU memory
-            peft_updates_dict[peft_name] = layer_update.cpu()
-            del layer_update
-            torch.cuda.empty_cache()
+            for layer_idx, (peft_name, weight_shape) in enumerate(peft_shapes_dict.items()):
+                lora_b_shape, lora_a_shape = (weight_shape[0], args.lora_r), (args.lora_r, weight_shape[1])
+                noise_a, noise_b = get_rng_noise(
+                    base_seed=args.base_seed,
+                    num_pop_pairs=args.population_size//2,
+                    pop_pair_idx=pop_idx_1//2,
+                    num_layers=len(peft_shapes_dict.keys()),
+                    layer_idx=layer_idx,
+                    step=pop_step,
+                    shapes=[lora_a_shape, lora_b_shape],
+                )
+                # Keep noise on CPU for memory efficiency
+                noise_b *= math.sqrt(args.sigma)
+                noise_a *= math.sqrt(args.sigma)
+                noise = torch.matmul(noise_b, noise_a)
+                assert noise.shape == weight_shape, f"{peft_name}: {noise.shape=} vs {weight_shape=}"
+                peft_updates_dict[peft_name] += (noise * (fitness1 - fitness2))
 
         vllm_updates_dict = map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, self.device)
 
@@ -313,21 +240,19 @@ class WorkerExtension:
         sample_param_name = None
         sample_param_before = None
 
-        for name, param in self.model_runner.model.named_parameters():
+        for i, (name, param) in enumerate(self.model_runner.model.named_parameters()):
             if name in vllm_updates_dict:
                 if sample_param_name is None:
                     sample_param_name = name
                     sample_param_before = param.data.clone().cpu()
 
                 update = vllm_updates_dict[name]
-                # Compute gradient and convert to param dtype
                 gradient = (1.0 / (args.population_size * args.sigma + 1e-8)) * update * args.learning_rate
                 if sample_param_name == name:
                     print(f"ES UPDATE DEBUG: gradient.abs().max()={gradient.abs().max().item():.6e}, lr={args.learning_rate}", flush=True)
-                # Move gradient to GPU and convert to model dtype (float16)
-                gradient = gradient.to(device=self.device, dtype=param.dtype)
+                # Move gradient to GPU before applying update
+                gradient = gradient.to(self.device)
                 param.data.add_(gradient)  # Use .data.add_() to ensure in-place update
-                del gradient  # Free GPU memory immediately
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()

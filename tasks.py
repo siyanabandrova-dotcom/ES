@@ -175,7 +175,7 @@ class MathTask2:
         return is_correct, model_answer
     
     def _format_conversation(self, example):
-        instruction_str = "Please reason step by step, and put your final answer within \\boxed{}."
+        instruction_str = "Please reason step-by-step concisely, and put your final answer within \\boxed{ }."
         problem = f"{example['problem']}\n{instruction_str}"
         if self.apply_chat_template:
             return self.tokenizer.apply_chat_template(

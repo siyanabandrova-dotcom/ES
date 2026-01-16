@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=eggroll_vllm
-#SBATCH --nodes=4
+#SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
 #SBATCH --output=/home/s5j/asims.s5j/Documents/esvllm-outer/hyperscale-es-vllm/logs/multinode_n16-%j.log
@@ -46,8 +46,10 @@ name_prefix=${16}
 ### 8B Baseline
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh 0.001 0.001 8192 "Qwen/Qwen3-8B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A16_8Bp256"
 
-### gem 4B Baseline
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh 0.001 0.001 4096 "Qwen/Qwen3-4B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A16_4Bp256"
+### 4B Baseline
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh 0.001 0.001 4096 "Qwen/Qwen3-4B-Base" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A4_2_4Bp1024"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh 0.001 0.001 4096 "Qwen/Qwen3-4B-Base" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_2_4Bp1024"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh 0.0001 0.0001 4096 "Qwen/Qwen3-4B-Base" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A4_2_4Bp1024"
 
 ### 1.7B Baseline
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n16.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A16_1.7Bp256"
