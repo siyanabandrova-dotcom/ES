@@ -97,3 +97,9 @@ VLLM speeds: input ~= 150-250 toks/s, output ~= 5k-7k toks/s
 Iteration part times: total: 545.1316s,  LoRA gen: 1.3563s, vLLM+Score: 501.7295s, Aggregation: 0.0020s, ES update: 17.6253s, broadcast: 0.9900s
 
 Just under 12 hrs for 100 iterations.
+
+# Caution:
+
+- Turn checkpoint saving back on,
+- Turn wandb back on,
+- Remove TP for 4B and 1.7B

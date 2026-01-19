@@ -48,7 +48,7 @@ name_prefix=${16}
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n8.sh 0.001 0.001 1024 "Qwen/Qwen3-0.6B" 8192 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-n8-p8192"
 
 ### 8B Baseline
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n8.sh 0.001 0.001 8192 "Qwen/Qwen3-8B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A16_8Bp256"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n8.sh 0.001 0.001 8192 "Qwen/Qwen3-8B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A8_8Bp256"
 
 ### 4B Baseline
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n8.sh 0.001 0.001 4096 "Qwen/Qwen3-4B-Base" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A8_4Bp1024"
@@ -56,7 +56,8 @@ name_prefix=${16}
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n8.sh 0.001 0.001 8192 "Qwen/Qwen3-4B-Base" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A8_4Bp1024_l8192"
 
 ### 1.7B Baseline
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n8.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A16_1.7Bp256"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n8.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B-Base" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A8_1.7Bp256"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n8.sh 0.001 0.001 4096 "Qwen/Qwen3-1.7B" 256 4 1 "math2:deepscaler40k" "normalize-with-std" 8 1 0.0 "no-pass-at-k" 10 "null" "A8_1.7Bp256"
 
 # --- Echo parameters for logging ---
 echo "Parameters:"

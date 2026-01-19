@@ -3,10 +3,10 @@
 #SBATCH --job-name=eggroll_vllm
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=4
-#SBATCH --time=24:00:00 
+#SBATCH --time=24:00:00
 #SBATCH --output=/home/s5j/asims.s5j/Documents/esvllm-outer/hyperscale-es-vllm/logs/multinode_n1-%j.log
 #SBATCH --cpus-per-task=16
-#SBATCH --ntasks-per-node=1 
+#SBATCH --ntasks-per-node=1
 
 # --- Create logs directory if it doesn't exist ---
 LOG_DIR="$HOME/Documents/esvllm-outer/hyperscale-es-vllm/logs"
@@ -38,11 +38,21 @@ steps_per_eval=${14}
 sub_dataset_size=${15}
 name_prefix=${16}
 
-# Run with:
+### Run with:
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh <sigma> <learning_rate> <max_tokens> <model_name> <population_size> <steps_per_adapter> <lora_r> <task> <normalize_with_std> <prompt_batch_size> <samples_per_prompt> <temperature> <pass_at_k> <steps_per_eval> <sub_dataset_size> <name_prefix>
 
-# Example for 2 nodes with 4 GPUs each (population_size=128, 16 per GPU):
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 4096 "Qwen/Qwen3-4B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "multinode-test6_1"
+### Examples:
+
+### Small debug run (TP=1, auto-detected)
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 1024 "Qwen/Qwen3-0.6B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-n1"
+
+### MoE debug run (TP=2, auto-detected for Qwen3-30B-A3B models)
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 1024 "Qwen/Qwen3-30B-A3B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-moe-n1"
+
+### Qwen1.5-MoE-A2.7B (TP=2, auto-detected to reduce memory usage)
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 1024 "Qwen/Qwen1.5-MoE-A2.7B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-moe-n1"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n1.sh 0.001 0.001 1024 "Qwen/Qwen1.5-MoE-A2.7B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-moe1.5-n1"
+
 
 # --- Echo parameters for logging ---
 echo "Parameters:"
@@ -77,13 +87,34 @@ source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate
 # --- Set WandB directory ---
 export WANDB_DIR=$SCRATCH/for_esvllm/wandb
 
+# --- Force Hugging Face to use offline mode (avoid rate limiting) ---
+# export HF_HUB_OFFLINE=1
+
 # --- Change to Working Directory ---
 echo "Changing to working directory..."
 cd $HOME/Documents/esvllm-outer/hyperscale-es-vllm
 
+# --- Clean up leftover shared memory directories from previous jobs (on all nodes) ---
+echo "Cleaning up /dev/shm from previous jobs on all nodes..."
+echo "Current job ID: $SLURM_JOB_ID"
+srun --nodes=$SLURM_JOB_NUM_NODES --ntasks=$SLURM_JOB_NUM_NODES bash -c '
+    echo "$(hostname): Cleaning /dev/shm..."
+    # Remove any old es_lora directories (from previous jobs)
+    chmod -R u+rwx /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
+    rm -rf /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
+    echo "$(hostname): Cleanup complete"
+'
+echo "Cleanup complete on all nodes"
+
 # ==========================================
 # === RAY CLUSTER SETUP (MULTI-NODE) ===
 echo "Setting up Ray Cluster..."
+
+# 0. Stop any existing Ray clusters on all nodes to avoid port conflicts
+echo "Stopping any existing Ray clusters on all nodes..."
+srun --nodes=$SLURM_JOB_NUM_NODES --ntasks=$SLURM_JOB_NUM_NODES bash -c 'ray stop 2>/dev/null || true' || true
+sleep 2
+echo "Ray cleanup complete on all nodes"
 
 # 1. Get the list of nodes and the head node
 nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
@@ -162,5 +193,19 @@ echo "---------------------------------"
 
 # Clean up Ray cluster
 echo "Stopping Ray cluster..."
-ray stop
+ray stop || true
 echo "Ray cluster stopped"
+
+# Clean up shared memory directories on all nodes (best effort)
+echo "Cleaning up /dev/shm directories on all nodes..."
+if [ -n "$SLURM_JOB_NUM_NODES" ] && [ -n "$SLURM_JOB_NODELIST" ]; then
+    srun --nodes=$SLURM_JOB_NUM_NODES --ntasks=$SLURM_JOB_NUM_NODES bash -c '
+        chmod -R u+rwx /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
+        rm -rf /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
+    ' || true
+else
+    # Fallback: at least clean the head node
+    chmod -R u+rwx /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
+    rm -rf /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
+fi
+echo "Shared memory cleanup complete"

@@ -96,10 +96,7 @@ class Args:
             TP_CONFIG = {
                 "Qwen/Qwen3-1.7B": 2, # for debugging tp
                 "Qwen/Qwen3-4B": 2, # for debugging tp
-                "Qwen/Qwen1.5-MoE-A2.7B": 2,
                 "Qwen/Qwen3-30B": 2,
-                "Qwen/Qwen3-30B-A3B": 2,
-                "Qwen/Qwen3-30B-A3B-FP8": 2,
             }
 
             # Check if model_name matches any pattern
@@ -114,29 +111,6 @@ LORA_TARGET_MODULES = [
     "q_proj", "k_proj", "v_proj", "o_proj",
     "gate_proj", "up_proj", "down_proj"
 ]
-
-# For MoE models, vLLM doesn't support LoRA on expert layers
-# Only apply LoRA to attention layers
-LORA_TARGET_MODULES_MOE = [
-    "q_proj", "k_proj", "v_proj", "o_proj"
-]
-
-def is_moe_model(model_name: str) -> bool:
-    """Check if a model is a Mixture of Experts model."""
-    moe_patterns = [
-        "MoE", "moe", "MOE",
-        "-A", "A-",  # Qwen's naming convention for MoE (e.g., 30B-A3B means 30B activate 3B)
-        "mixtral",
-    ]
-    return any(pattern in model_name for pattern in moe_patterns)
-
-def get_lora_target_modules(model_name: str) -> list[str]:
-    """Get appropriate LoRA target modules based on model type."""
-    if is_moe_model(model_name):
-        print(f"Detected MoE model: {model_name}. Using attention-only LoRA targets.", flush=True)
-        return LORA_TARGET_MODULES_MOE
-    else:
-        return LORA_TARGET_MODULES
 
 def map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, device: torch.device):
     # Keep on CPU to avoid OOM - will move to GPU when applying
@@ -558,10 +532,6 @@ class ESNcclLLM(LLM):
         config_to_save = copy.deepcopy(self.lora_config_data)
         if "target_modules" in config_to_save and isinstance(config_to_save["target_modules"], (set, tuple)):
             config_to_save["target_modules"] = list(config_to_save["target_modules"])
-
-        # Debug: Print target modules being saved (only once)
-        if population_indices and population_indices[0] == 0:
-            print(f"LORA GEN: LoRA config target_modules: {config_to_save.get('target_modules', 'NOT SET')}", flush=True)
 
         for pop_idx in population_indices:
             adapter_path = os.path.join(self.lora_storage_path, f"pop_{pop_idx}")
@@ -1016,13 +986,10 @@ def main(args: Args):
     print("--- Preparing Initial Master LoRA Checkpoint ---", flush=True)
     sys.stdout.flush()
 
-    # Select appropriate LoRA target modules based on model type
-    target_modules = get_lora_target_modules(args.model_name)
-
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
-        target_modules=target_modules,
+        target_modules=LORA_TARGET_MODULES,
         lora_dropout=0.0,
         bias="none",
         task_type="CAUSAL_LM"
@@ -1049,14 +1016,6 @@ def main(args: Args):
     sys.stdout.flush()
     peft_state_dict = copy.deepcopy(peft_model.state_dict())
     peft_shapes_dict = {name: x.shape for name, x in peft_model.named_parameters() if name.endswith(".base_layer.weight")}
-
-    # Debug: Print what LoRA layers we captured
-    print(f"MAIN: Captured {len(peft_shapes_dict)} LoRA base layers:", flush=True)
-    for i, (name, shape) in enumerate(list(peft_shapes_dict.items())[:10]):  # Print first 10
-        print(f"  {i}: {name} -> {shape}", flush=True)
-    if len(peft_shapes_dict) > 10:
-        print(f"  ... and {len(peft_shapes_dict) - 10} more layers", flush=True)
-
     lora_config_dict = lora_config.to_dict()
     if "target_modules" in lora_config_dict and isinstance(lora_config_dict["target_modules"], (set, tuple)):
         lora_config_dict["target_modules"] = list(lora_config_dict["target_modules"])
@@ -1164,21 +1123,6 @@ def main(args: Args):
             apply_chat_template=task.apply_chat_template,
         )
         print(f"Training on {args.task}, evaluating on {eval_task.split_names}.")
-
-    # Check for MoE + LoRA incompatibility
-    if is_moe_model(args.model_name):
-        print("=" * 80, flush=True)
-        print("ERROR: vLLM does not currently support LoRA with MoE models.", flush=True)
-        print(f"The model '{args.model_name}' is a Mixture of Experts model.", flush=True)
-        print("", flush=True)
-        print("vLLM Error: 'For MoE models, vLLM currently does not support fused MoE LoRA inference.'", flush=True)
-        print("", flush=True)
-        print("Solutions:", flush=True)
-        print("  1. Use a non-MoE model (e.g., Qwen/Qwen3-4B, Qwen/Qwen3-8B, Qwen/Qwen3-14B, Qwen/Qwen3-32B)", flush=True)
-        print("  2. Wait for vLLM to add MoE + LoRA support", flush=True)
-        print("  3. Use a different inference backend that supports MoE + LoRA", flush=True)
-        print("=" * 80, flush=True)
-        sys.exit(1)
 
     # Launch engines
     print(f"MAIN: Launching {args.num_engines} vLLM engines...", flush=True)
