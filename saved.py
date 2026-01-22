@@ -36,7 +36,7 @@ print("IMPORTS: All imports completed successfully", flush=True)
 print("=" * 80, flush=True)
 
 # Default Hyperparameters
-EXPERIMENT_DIR = os.path.expandvars("$SCRATCH/for_es_lora")
+EXPERIMENT_DIR = os.path.expandvars("$SCRATCH/for_es_lora/experiments")
 # Use SLURM_JOB_ID to make path unique per job, avoiding conflicts from previous runs
 SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
 LORA_POPULATION_PATH = f"/dev/shm/es_lora_population_async_{SLURM_JOB_ID}"
@@ -66,6 +66,7 @@ class Args:
     # --- Runtime Config ---
     num_gpus: int = None
     num_engines: int = None
+    tensor_parallel_size: int = 1  # Number of GPUs per engine for tensor parallelism
     verbose: bool = True
     base_seed: int = 0
     sub_dataset_size: int = None
@@ -79,13 +80,35 @@ class Args:
     name_prefix: str = f"debug"
 
     # --- Checkpointing ---
-    save_freq: int = 10  # None: saves at last step, -1: no saving
+    save_freq: int = None  # None: no saving, -1: saves at last step
     checkpoint_dir: str = None  # If None, will use EXPERIMENT_DIR/run_name/checkpoints
     resume_from: str = None  # Path to checkpoint to resume from
 
     def __post_init__(self):
         if self.lora_alpha is None:
             self.lora_alpha = self.lora_r
+
+        # Auto-configure tensor_parallel_size based on model name if not explicitly set
+        # Only apply auto-config if TP was not set via command line (still equals default of 1)
+        if self.tensor_parallel_size == 1:
+            # Dictionary of models that benefit from tensor parallelism
+            # Maps model name patterns to recommended TP size
+            TP_CONFIG = {
+                "Qwen/Qwen3-1.7B": 2, # for debugging tp
+                "Qwen/Qwen3-4B": 2, # for debugging tp
+                "Qwen/Qwen3-30B": 2,
+                "Qwen/Qwen3-30B-Base": 2,
+                "Qwen/Qwen2.5-72B": 4,
+                "Qwen/Qwen2.5-72B-Instruct": 4,
+                # "Qwen/Qwen2.5-1.5B": 4, # for debugging tp
+            }
+
+            # Check if model_name matches any pattern
+            for model_pattern, tp_size in TP_CONFIG.items():
+                if model_pattern in self.model_name:
+                    self.tensor_parallel_size = tp_size
+                    print(f"Auto-configured tensor_parallel_size={tp_size} for model {self.model_name}", flush=True)
+                    break
 
 
 LORA_TARGET_MODULES = [
@@ -104,36 +127,61 @@ def map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, device: torch.
         if "self_attn.q_proj" in vllm_name:
             vllm_name = vllm_name.replace("self_attn.q_proj", "self_attn.qkv_proj")
             start = 0
-            end = weight_update.shape[0]
-            vllm_updates_dict[vllm_name][start:end] += weight_update
+            # If vLLM tensor is sharded (TP > 1), only use the corresponding shard
+            vllm_size = vllm_updates_dict[vllm_name].shape[0]
+            end = min(start + weight_update.shape[0], vllm_size)
+            weight_shard = weight_update[:end-start]
+            vllm_updates_dict[vllm_name][start:end] += weight_shard
         elif "self_attn.k_proj" in vllm_name:
             vllm_name = vllm_name.replace("self_attn.k_proj", "self_attn.qkv_proj")
             peft_q_name = peft_name.replace("k_proj", "q_proj")
             start = peft_updates_dict[peft_q_name].shape[0]
-            end = start + weight_update.shape[0]
-            vllm_updates_dict[vllm_name][start:end] += weight_update
+            vllm_size = vllm_updates_dict[vllm_name].shape[0]
+            end = min(start + weight_update.shape[0], vllm_size)
+            weight_shard = weight_update[:end-start]
+            vllm_updates_dict[vllm_name][start:end] += weight_shard
         elif "self_attn.v_proj" in vllm_name:
             vllm_name = vllm_name.replace("self_attn.v_proj", "self_attn.qkv_proj")
             peft_q_name = peft_name.replace("v_proj", "q_proj")
             peft_k_name = peft_name.replace("v_proj", "k_proj")
             start = peft_updates_dict[peft_q_name].shape[0] + peft_updates_dict[peft_k_name].shape[0]
-            end = start + weight_update.shape[0]
-            vllm_updates_dict[vllm_name][start:end] += weight_update
+            vllm_size = vllm_updates_dict[vllm_name].shape[0]
+            end = min(start + weight_update.shape[0], vllm_size)
+            weight_shard = weight_update[:end-start]
+            vllm_updates_dict[vllm_name][start:end] += weight_shard
         elif "self_attn.o_proj" in vllm_name:
-            vllm_updates_dict[vllm_name] += weight_update
+            # For column-parallel layers (o_proj, down_proj), shard along dimension 1 (columns)
+            vllm_size = vllm_updates_dict[vllm_name].shape[1]
+            if vllm_size < weight_update.shape[1]:
+                # Sharded along columns
+                weight_shard = weight_update[:, :vllm_size]
+                vllm_updates_dict[vllm_name] += weight_shard
+            else:
+                vllm_updates_dict[vllm_name] += weight_update
         elif "mlp.gate_proj" in vllm_name:
             vllm_name = vllm_name.replace("mlp.gate_proj", "mlp.gate_up_proj")
             start = 0
-            end = weight_update.shape[0]
-            vllm_updates_dict[vllm_name][start:end] += weight_update
+            vllm_size = vllm_updates_dict[vllm_name].shape[0]
+            end = min(start + weight_update.shape[0], vllm_size)
+            weight_shard = weight_update[:end-start]
+            vllm_updates_dict[vllm_name][start:end] += weight_shard
         elif "mlp.up_proj" in vllm_name:
             vllm_name = vllm_name.replace("mlp.up_proj", "mlp.gate_up_proj")
             peft_gate_name = peft_name.replace("up_proj", "gate_proj")
             start = peft_updates_dict[peft_gate_name].shape[0]
-            end = start + weight_update.shape[0]
-            vllm_updates_dict[vllm_name][start:end] += weight_update
+            vllm_size = vllm_updates_dict[vllm_name].shape[0]
+            end = min(start + weight_update.shape[0], vllm_size)
+            weight_shard = weight_update[:end-start]
+            vllm_updates_dict[vllm_name][start:end] += weight_shard
         elif "mlp.down_proj" in vllm_name:
-            vllm_updates_dict[vllm_name] += weight_update
+            # For column-parallel layers (o_proj, down_proj), shard along dimension 1 (columns)
+            vllm_size = vllm_updates_dict[vllm_name].shape[1]
+            if vllm_size < weight_update.shape[1]:
+                # Sharded along columns
+                weight_shard = weight_update[:, :vllm_size]
+                vllm_updates_dict[vllm_name] += weight_shard
+            else:
+                vllm_updates_dict[vllm_name] += weight_update
         else:
             raise ValueError(f"Unexpected PEFT layer name: {peft_name}")
     return vllm_updates_dict
@@ -352,9 +400,22 @@ class WorkerExtension:
         self.device = self.model_runner.device
         self.gpu_rank = gpu_rank
         self.world_size = world_size
-        self.inter_pg = _stateless_init_process_group(
-            master_address, master_port, gpu_rank, world_size, self.device
-        )
+
+        # Only TP rank 0 should participate in inter-engine communication
+        # When using tensor parallelism, each engine has multiple workers (TP ranks)
+        # but only one representative (rank 0) should join the inter-engine group
+        from vllm.distributed import get_tensor_model_parallel_rank
+        tp_rank = get_tensor_model_parallel_rank()
+
+        if tp_rank == 0:
+            # This is the TP master, initialize inter-engine communication
+            self.inter_pg = _stateless_init_process_group(
+                master_address, master_port, gpu_rank, world_size, self.device
+            )
+        else:
+            # This is a TP worker, skip inter-engine communication
+            self.inter_pg = None
+
         return True
 
     @torch.no_grad()
@@ -668,10 +729,70 @@ class ESNcclLLM(LLM):
 
         return fitness_list, info, responses_for_logging
 
-def launch_engines(num_engines, model_name, population_size, lora_r):
-    """Launches multiple vLLM engines, each dedicated to one GPU via Ray Placement Groups."""
+def launch_engines(num_engines, model_name, population_size, lora_r, tensor_parallel_size=1):
+    """Launches multiple vLLM engines via Ray Placement Groups.
+
+    Args:
+        num_engines: Number of engines to launch
+        model_name: HuggingFace model name
+        population_size: Total population size
+        lora_r: LoRA rank
+        tensor_parallel_size: Number of GPUs per engine for tensor parallelism
+    """
+    # When TP > 1, we create placement groups with separate bundles for each GPU
+    # vLLM requires placement groups where each bundle has exactly 1 GPU
+    # We create a placement group with tensor_parallel_size bundles, each with 1 GPU
+    # NOTE: enforce_eager=True is required for LoRA + TP > 1 to work correctly
+    # (vLLM v1 has issues with LoRA weight sharding across GPUs)
+    if tensor_parallel_size > 1:
+        print(f"Creating {num_engines} placement groups ({tensor_parallel_size} bundles of 1 GPU each).")
+        # Each placement group has tensor_parallel_size bundles, each with 1 GPU
+        pgs = [
+            placement_group(
+                [{"GPU": 1, "CPU": 0} for _ in range(tensor_parallel_size)],
+                lifetime="detached",
+                strategy="STRICT_PACK"  # Keep GPUs on same node for TP
+            )
+            for _ in range(num_engines)
+        ]
+        ray.get([pg.ready() for pg in pgs])
+
+        strategies = [
+            PlacementGroupSchedulingStrategy(
+                placement_group=pg,
+                placement_group_capture_child_tasks=True,
+            )
+            for pg in pgs
+        ]
+
+        print(f"Launching {num_engines} ESNcclLLM Ray actors (TP={tensor_parallel_size}).")
+        print(f"NOTE: Using enforce_eager=True for LoRA + TP compatibility")
+        engines = [
+            ray.remote(num_cpus=0, num_gpus=0, scheduling_strategy=strategy)(ESNcclLLM).remote(
+                model=model_name,
+                tensor_parallel_size=tensor_parallel_size,
+                distributed_executor_backend="ray",
+                worker_extension_cls="es_lora_multinode.WorkerExtension",
+                dtype="auto",
+                enable_prefix_caching=False,
+                # enforce_eager=False,
+                enforce_eager=True,  # Required for LoRA + TP > 1
+                enable_lora=True,
+                max_loras=(population_size + num_engines - 1) // num_engines,
+                max_lora_rank=max(lora_r, 8),
+                gpu_memory_utilization=0.65,
+                trust_remote_code=True,
+            )
+            for strategy in strategies
+        ]
+        return engines, pgs
+
+    # TP=1: Use placement groups to pin each engine to a specific GPU
     print(f"Creating {num_engines} placement groups (1 GPU each).")
-    pgs = [placement_group([{"GPU": 1, "CPU": 0}], lifetime="detached") for _ in range(num_engines)]
+    pgs = [
+        placement_group([{"GPU": 1, "CPU": 0}], lifetime="detached")
+        for _ in range(num_engines)
+    ]
     ray.get([pg.ready() for pg in pgs])
 
     strategies = [
@@ -690,13 +811,13 @@ def launch_engines(num_engines, model_name, population_size, lora_r):
             tensor_parallel_size=1,
             distributed_executor_backend="ray",
             worker_extension_cls="es_lora_multinode.WorkerExtension",
-            dtype="float16",
+            dtype="auto",
             enable_prefix_caching=False,
             enforce_eager=False,
             enable_lora=True,
             max_loras=(population_size + num_engines - 1) // num_engines,
             max_lora_rank=max(lora_r, 8),
-            gpu_memory_utilization=0.9,
+            gpu_memory_utilization=0.65,
             trust_remote_code=True,
         )
         for strategy in strategies
@@ -774,15 +895,23 @@ def main(args: Args):
     print("MAIN: Querying Ray for total cluster resources...", flush=True)
     resources = ray.cluster_resources()
     total_gpus = int(resources.get("GPU", 0))
-    
+
     if total_gpus == 0:
         raise ValueError("Ray cluster reports 0 GPUs! Check your Slurm/Ray configuration.")
 
     args.num_gpus = total_gpus
-    args.num_engines = args.num_gpus
-    
+
+    # Calculate number of engines based on tensor parallelism
+    if total_gpus % args.tensor_parallel_size != 0:
+        raise ValueError(
+            f"Total GPUs ({total_gpus}) must be divisible by tensor_parallel_size ({args.tensor_parallel_size}). "
+            f"Either adjust --tensor-parallel-size or allocate a different number of GPUs."
+        )
+
+    args.num_engines = args.num_gpus // args.tensor_parallel_size
+
     print(f"MAIN: Ray detected {args.num_gpus} GPUs across the cluster.", flush=True)
-    print(f"MAIN: Launching {args.num_engines} engines (1 per GPU).", flush=True)
+    print(f"MAIN: Launching {args.num_engines} engines ({args.tensor_parallel_size} GPU(s) per engine).", flush=True)
     sys.stdout.flush()
 
     assert args.population_size % 2 ==0, f"{args.population_size=} must be even for antithetic sampling."
@@ -828,6 +957,7 @@ def main(args: Args):
     run_name += f"alpha{args.lora_alpha}-"
     run_name += f"seed{args.base_seed}-"
     run_name += f"gpus{args.num_gpus}-"
+    run_name += f"tp{args.tensor_parallel_size}-" if args.tensor_parallel_size > 1 else ""
     run_name += f"-{int(time.time())}"
     if args.use_wandb:
         print("MAIN: Initializing WandB...", flush=True)
@@ -846,7 +976,7 @@ def main(args: Args):
         # Expand environment variables in user-provided path
         args.checkpoint_dir = os.path.expandvars(args.checkpoint_dir)
 
-    if args.save_freq != -1:  # If checkpointing is enabled
+    if args.save_freq is not None:
         os.makedirs(args.checkpoint_dir, exist_ok=True)
         print(f"Checkpoints will be saved to: {args.checkpoint_dir}", flush=True)
 
@@ -859,6 +989,7 @@ def main(args: Args):
 
     print("--- Preparing Initial Master LoRA Checkpoint ---", flush=True)
     sys.stdout.flush()
+
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
@@ -1000,7 +1131,9 @@ def main(args: Args):
     # Launch engines
     print(f"MAIN: Launching {args.num_engines} vLLM engines...", flush=True)
     sys.stdout.flush()
-    engines, pgs = launch_engines(args.num_engines, args.model_name, args.population_size, args.lora_r)
+    engines, pgs = launch_engines(
+        args.num_engines, args.model_name, args.population_size, args.lora_r, args.tensor_parallel_size
+    )
     print("Engines launched successfully.", flush=True)
     sys.stdout.flush()
 
@@ -1371,10 +1504,10 @@ def main(args: Args):
         should_save = False
         is_last_step = (es_step == args.num_iterations - 1)
 
-        if args.save_freq == -1:
+        if args.save_freq is None:
             # No checkpointing
             should_save = False
-        elif args.save_freq is None:
+        elif args.save_freq == -1:
             # Save only at last step
             should_save = is_last_step
         else:

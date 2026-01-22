@@ -103,3 +103,4 @@ Just under 12 hrs for 100 iterations.
 - Turn checkpoint saving back on,
 - Turn wandb back on,
 - Remove TP for 4B and 1.7B
+- Increase job time

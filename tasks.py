@@ -2,7 +2,21 @@ import re
 import numpy as np
 from datasets import load_dataset
 from typing import List, Optional
+from egg_img import EGG_IMG, CHICK_IMG
 
+def general_get_fitness(task_obj, generations, answer, pass_at_k: bool = False):
+        if len(generations) == 0:
+            # Edge case: no generations (shouldn't happen in normal operation)
+            return 0.0, (), np.array([])
+
+        fitnesses, model_answers = zip(*[task_obj.get_fitness_single_sample(g, answer) for g in generations])
+        fitnesses = np.array(fitnesses)
+        if pass_at_k:
+            fitness = np.max(fitnesses)
+        else:
+            fitness = np.mean(fitnesses)
+        return fitness, model_answers, fitnesses, {}
+        
 def extract_model_answer(text, ans_format="none"):
         regex_pattern = "(-?[$0-9.,]{2,})|(-?[0-9]+)"
         regexes_to_ignore =[
@@ -65,16 +79,15 @@ class ZerosTask:
         batch_prompts = [self.prompts[i] for i in indices]
         return batch_prompts, [None for _ in batch_prompts]
        
-    def get_fitnesses(self, generations, answers):
-        return [sum(c == "0" for c in g)/self.max_tokens for g in generations], [None for _ in generations]
+    def get_fitness(self, generations, answer, pass_at_k: bool = False):
+        return general_get_fitness(self, generations, answer, pass_at_k)
     
-    def get_fitness(self, generation, answer):
+    def get_fitness_single_sample(self, generation, answer):
         return sum(c == "0" for c in generation)/self.max_tokens, None
     
 class RandomTask:
-    def __init__(self, batch_size, max_tokens, max_random_number, seed, answer_format="none"):
+    def __init__(self, batch_size, max_random_number, seed, answer_format="none"):
         self.batch_size = batch_size
-        self.max_tokens = max_tokens
         self.prompt = "Pick a random number between 1 and " + str(max_random_number) + " (inclusive)."
         self.ans_format = answer_format
         if self.ans_format == "none":
@@ -92,7 +105,10 @@ class RandomTask:
         batch_answers = self.rng.integers(1, self.max_random_number+1, size=self.batch_size).tolist()
         return batch_prompts, batch_answers
     
-    def get_fitness(self, generation, answer):
+    def get_fitness(self, generations, answer, pass_at_k: bool = False):
+        return general_get_fitness(self, generations, answer, pass_at_k)
+    
+    def get_fitness_single_sample(self, generation, answer):
         model_answer, _ = extract_model_answer(generation, ans_format=self.ans_format)
         try:
             model_answer = int(model_answer)
@@ -208,7 +224,10 @@ class MathTask2:
             examples.extend([split_dataset[i % split_length] for i in indices])
         return self._format_examples(examples)
     
-    def get_fitness(self, generation, gt_answer):
+    def get_fitness(self, generations, gt_answer, pass_at_k: bool = False):
+        return general_get_fitness(self, generations, gt_answer, pass_at_k)
+    
+    def get_fitness_single_sample(self, generation, gt_answer):
         is_correct, model_answer = self.check_correct(generation, gt_answer)
         return 1.0 if is_correct else 0.0, model_answer
 
@@ -237,14 +256,11 @@ class MathTask:
         batch_prompts = [self._format_conversation(example)["prompt"] for example in examples]
         batch_answers = [self._extract_gt_answer(example["answer"]) for example in examples]    
         return batch_prompts, batch_answers
-
-    def get_fitnesses(self, generations, gt_answers):
-        assert len(generations) == len(gt_answers), f"{len(generations)=} must be equal to {len(gt_answers)=}"
-        model_answers = [extract_model_answer(gen, ans_format=self.ans_format)[0] for gen in generations]
-        is_corrects = [1.0 if (ma == ga) else 0.0 for ma, ga in zip(model_answers, gt_answers)]
-        return is_corrects, model_answers
     
-    def get_fitness(self, generation, gt_answer):
+    def get_fitness(self, generations, gt_answer, pass_at_k: bool = False):
+        return general_get_fitness(self, generations, gt_answer, pass_at_k)
+
+    def get_fitness_single_sample(self, generation, gt_answer):
         model_answer = extract_model_answer(generation, ans_format=self.ans_format)[0]
         is_correct = 1.0 if (model_answer == gt_answer) else 0.0
         return is_correct, model_answer
@@ -335,19 +351,244 @@ class CountdownTask:
 
         return 0.0, answer_content
     
-    def get_fitnesses(self, generations, answers):
-        fitnesses = []
-        model_answers = []
-        for generation, answer in zip(generations, answers):
-            reward, model_answer = self.get_fitness(generation, answer)
-            fitnesses.append(reward)
-            model_answers.append(model_answer)
-        return fitnesses, model_answers
+    def get_fitness(self, generations, answer, pass_at_k: bool = False):
+        return general_get_fitness(self, generations, answer, pass_at_k)
     
-    def get_fitness(self, generation, answer):
+    def get_fitness_single_sample(self, generation, answer):
         numbers, target = answer
         format_reward = self._format_reward_function("<think>" + generation, self.end_token)
         answer_reward, model_answer = self._answer_reward_function(generation, numbers, target)
         reward = format_reward * 0.1 + answer_reward
         return reward, model_answer
     
+
+def jenson_shannon_divergence(p, q):
+    """Computes the Jensen-Shannon divergence between two categorical distributions."""
+    p = np.array(p)
+    q = np.array(q)
+    p = p / np.sum(p)
+    q = q / np.sum(q)
+    m = 0.5 * (p + q)
+    def kl_divergence(a, b):
+        mask = (a > 0)
+        return np.sum(a[mask] * np.log(a[mask] / b[mask]))
+    jsd = 0.5 * kl_divergence(p, m) + 0.5 * kl_divergence(q, m)
+    jsd_normalized = jsd / np.log(2) # normalize to [0, 1]
+    return jsd_normalized
+
+def total_variation_distance(p, q):
+    p = np.array(p)
+    q = np.array(q)
+    p = p / np.sum(p)
+    q = q / np.sum(q)
+    tvd = 0.5 * np.sum(np.abs(p - q))
+    return tvd
+
+def chi_squared_distance(p, q):
+    p = np.array(p)
+    q = np.array(q)
+    p = p / np.sum(p)
+    q = q / np.sum(q)
+    chi2 = np.sum((p - q) ** 2 / (q + 1e-10)) # add small value to avoid division by zero
+    return chi2
+
+def kl_divergence(p, q):
+    p = np.array(p)
+    q = np.array(q)
+    p = p / np.sum(p)
+    q = q / np.sum(q)
+    mask = (p > 0)
+    kl = np.sum(p[mask] * np.log(p[mask] / (q[mask] + 1e-10))) # add small value to avoid log(0)
+    return kl
+
+distance_metrics = {
+    "jsd": jenson_shannon_divergence,
+    "tvd": total_variation_distance,
+    "chi2": chi_squared_distance,
+    "kl": kl_divergence,
+}
+
+class DrawEggTask:
+    def __init__(self, batch_size, answer_format="none", distance_metric="jsd", pass_at_k: bool = False, apply_penalty: bool = False):
+        self.batch_size = batch_size
+        assert batch_size == 1, "Batch size > 1 doesn't make sense for DrawEgg task."
+        assert pass_at_k == False, "pass_at_k doesn't make sense for DrawEgg task."
+
+        self.target_counts = EGG_IMG
+        assert self.target_counts.shape == (5, 14), f"Unexpected shape {self.target_counts.shape=}."
+        self.target_counts = self.target_counts.flatten()
+        self.max_number = self.target_counts.shape[-1]
+        assert self.max_number == 70
+        self.keys = list(range(1, self.max_number+1)) + ['none']
+        self.target_counts = np.concatenate([self.target_counts, [0.0]]) # append zero for 'none' to shape (10,)
+
+        self.prompt = f"Pick a random number between 1 and {self.max_number} (inclusive)."
+        self.ans_format = answer_format
+        if self.ans_format == "none":
+            pass
+        elif self.ans_format == "boxed":
+            self.prompt += " Format your pick in \\boxed{}."
+        else:
+            raise ValueError(f"Unknown {self.ans_format=}")
+        self.prompt = f"User: {self.prompt}\n\nAssistant:"
+
+        self.distance_metric = distance_metric
+        assert distance_metric in ["jsd", "tvd", "chi2", "kl"], f"Unknown {distance_metric=}"
+        self.apply_penalty = apply_penalty
+
+    def get_batch(self):
+        batch_prompts = [self.prompt for _ in range(self.batch_size)]
+        batch_answers = [None for _ in range(self.batch_size)]
+        return batch_prompts, batch_answers
+    
+    def get_counts(self, generations):
+        counts = np.zeros_like(self.target_counts, dtype=np.float32)
+        model_answers = []
+        for generation in generations:
+            model_answer = self.extract_single_answer(generation)
+            model_answers.append(model_answer)
+            if model_answer is None or model_answer < 1 or model_answer > self.max_number:
+                counts[-1] += 1 # 'none' count
+            else:
+                counts[model_answer-1] += 1
+        return counts, model_answers
+    
+    def get_fitness(self, generations, answer, pass_at_k: bool = False):
+        counts, model_answers = self.get_counts(generations)
+
+        print(f"DrawEgg counts: {counts}")
+        print(f"DrawEgg target: {self.target_counts}")
+
+        info = {}
+        for key, value in distance_metrics.items():
+            dist = value(counts, self.target_counts)
+            info[f"draw/{key}_distance"] = dist
+
+        distance = info[f"draw/{self.distance_metric}_distance"]
+        penalty = counts[-1] / np.sum(counts) # penalty for unformatted answers
+        fitness = (1.0 - distance)
+        if self.apply_penalty:
+            fitness -= penalty
+
+        individual_fitnesses = np.full(len(generations), fitness) # same fitness for all samples
+        info["draw/penalty"] = penalty
+        return fitness, tuple(model_answers), individual_fitnesses, info
+
+    def extract_single_answer(self, generation):
+        model_answer, _ = extract_model_answer(generation, ans_format=self.ans_format)
+        try:
+            model_answer = int(model_answer)
+        except:
+            model_answer = None
+        return model_answer
+    
+def extract_three_integers(text):
+    """
+    Extracts 3 integers from the last \boxed{...} in the text.
+    Returns (list_of_ints, status_message) or (None, error_message).
+    """
+    # 1. Check if boxed exists
+    if "boxed{" not in text:
+        return None, "No `boxed{` found"
+
+    # 2. Extract the content of the LAST boxed element
+    try:
+        # Split by boxed{ and take the last part
+        fragment = text.split("boxed{")[-1]
+        
+        # Split by the closing brace '}' to isolate the content INSIDE the box
+        # This prevents capturing numbers that might exist in the text after the box
+        if "}" in fragment:
+            box_content = fragment.split("}")[0]
+        else:
+            # Fallback if valid LaTeX is malformed (missing closing brace)
+            box_content = fragment
+            
+        # 3. Find all integers in that content
+        # This regex matches optional negative signs followed by digits
+        matches = re.findall(r'-?\d+', box_content)
+        
+        # 4. Check if we found exactly 3 integers
+        if len(matches) == 3:
+            # Convert strings to integers
+            integers = [int(x) for x in matches]
+            return integers, "3 integers extracted"
+        else:
+            return None, f"Found {len(matches)} integers, expected 3"
+
+    except Exception as e:
+        return None, f"Error processing text: {str(e)}"
+    
+
+class DrawChickTask:
+    def __init__(self, batch_size, distance_metric="jsd", pass_at_k: bool = False, appy_penalty: bool = False):
+        self.batch_size = batch_size
+        assert batch_size == 1, "Batch size > 1 doesn't make sense for DrawChickTask task."
+        assert pass_at_k == False, "pass_at_k doesn't make sense for DrawChickTask task."
+
+        self.target_counts = CHICK_IMG
+        assert self.target_counts.shape == (3, 12, 12), f"Unexpected shape {self.target_counts.shape=}."
+        self.target_counts = self.target_counts.reshape(self.target_counts.shape[0], -1) # flatten to (3, 144)
+        self.max_number = self.target_counts.shape[-1]
+        assert self.max_number == 144
+        self.keys = list(range(1, self.max_number+1)) + ['none']
+        self.target_counts = np.concatenate((self.target_counts, np.zeros((3, 1), dtype=self.target_counts.dtype)), axis=1) # append zeros for 'none' to (3, 145)
+
+        self.prompt = f"Choose a sequence of 3 numbers, each between 1 and {self.max_number} (inclusive)."
+        self.prompt += r" Format the sequence in \boxed{}, eg. \boxed{12--34--56}."
+        self.prompt = f"User: {self.prompt}\n\nAssistant:"
+
+        self.distance_metric = distance_metric
+        assert distance_metric in ["jsd", "tvd", "chi2", "kl"], f"Unknown {distance_metric=}"
+        self.appy_penalty = appy_penalty
+
+    def get_batch(self):
+        batch_prompts = [self.prompt for _ in range(self.batch_size)]
+        batch_answers = [None for _ in range(self.batch_size)]
+        return batch_prompts, batch_answers
+    
+    def get_counts(self, generations):
+        counts = np.zeros_like(self.target_counts, dtype=np.float32)
+        model_answers = []
+        for generation in generations:
+            model_answer, _ = extract_three_integers(generation)
+            model_answers.append(model_answer)
+            if model_answer is None:
+                counts[:, -1] += 1 # 'none' count
+            elif len(model_answer) != 3:
+                counts[:, -1] += 1 # 'none' count
+            else:
+                for i, ma in enumerate(model_answer):
+                    if ma < 1 or ma > self.max_number:
+                        counts[i, -1] += 1 # 'none' count
+                    else:
+                        counts[i, ma-1] += 1
+        print(f"DrawChick counts: {counts}")
+        # print(f"DrawChick target: {self.target_counts}")
+        return counts, model_answers
+    
+    def get_fitness(self, generations, answer, pass_at_k: bool = False):
+        counts, model_answers = self.get_counts(generations)
+        print(f"DrawChick counts: {counts}")
+        # print(f"DrawChick target: {self.target_counts}")
+
+        info = {
+            f"draw/{key}_distance": 0.0 for key in distance_metrics.keys()
+        }
+        info["draw/penalty"] = 0.0
+
+        for i in range(3):
+            for key, value in distance_metrics.items():
+                info[f"draw/{key}_distance"] += value(counts[i], self.target_counts[i])
+            info[f"draw/penalty"] += counts[i, -1] / np.sum(counts[i])
+        for k, v in info.items():
+            info[k] /= 3.0
+
+        distance = info[f"draw/{self.distance_metric}_distance"]
+        penalty = info["draw/penalty"]
+        fitness = (1.0 - distance)
+        if self.appy_penalty:
+            fitness -= penalty
+
+        individual_fitnesses = np.full(len(generations), fitness) # same fitness for all samples
+        return fitness, tuple(model_answers), individual_fitnesses, info

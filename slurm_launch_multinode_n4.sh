@@ -3,7 +3,7 @@
 #SBATCH --job-name=eggroll_vllm
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=4
-#SBATCH --time=4:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/home/s5j/asims.s5j/Documents/esvllm-outer/hyperscale-es-vllm/logs/multinode_n4-%j.log
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks-per-node=1
@@ -156,10 +156,8 @@ python es_lora_multinode.py \
     --${pass_at_k} \
     --steps-per-eval $steps_per_eval \
     $DATASET_SIZE_CMD \
-    --name-prefix $name_prefix
-    
-    #  \
-    # --use-wandb
+    --name-prefix $name_prefix \
+    --use-wandb
 
 PYTHON_EXIT_CODE=$?
 echo "---------------------------------"
@@ -233,12 +231,12 @@ echo "Shared memory cleanup complete"
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-32B" 1024 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_32B"
 
 ### Random task
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 512 "Qwen/Qwen3-1.7B" 256 4 1 "random-boxed" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_rand_p256"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 512 "Qwen/Qwen3-1.7B" 256 4 1 "random-boxed" "normalize-with-std" 16 4 0.7 "no-pass-at-k" 10 "null" "A4_rand_p256"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 64 "Qwen/Qwen3-1.7B" 256 4 1 "random-boxed" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A4_rand_p256"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 64 "Qwen/Qwen3-1.7B" 256 4 1 "random-boxed" "normalize-with-std" 16 4 0.7 "no-pass-at-k" 10 "null" "A4_rand_p256"
 
 ### Random task pass@k
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 512 "Qwen/Qwen3-1.7B-base" 256 4 1 "random-boxed" "normalize-with-std" 16 4 0.7 "pass-at-k" 10 "null" "A4_rand_K"
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 512 "Qwen/Qwen3-1.7B-base" 256 4 1 "random-boxed" "normalize-with-std" 16 4 0.7 "no-pass-at-k" 10 "null" "A4_rand_Kbase"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 64 "Qwen/Qwen3-1.7B-base" 256 4 1 "random-boxed" "normalize-with-std" 16 4 0.7 "pass-at-k" 10 "null" "A4_rand_K"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 64 "Qwen/Qwen3-1.7B-base" 256 4 1 "random-boxed" "normalize-with-std" 16 4 0.7 "no-pass-at-k" 10 "null" "A4_rand_Kbase"
 
 ### Larger models
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 4096 "Qwen/Qwen3-4B" 32 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "A_4_4BP32"
@@ -250,3 +248,22 @@ echo "Shared memory cleanup complete"
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 1024 "Qwen/Qwen3-30B-A3B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-moe-n4"
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 1024 "Qwen/Qwen3-4B" 128 4 1 "math2:deepscaler40k" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-4b-tp2-n4"
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-1.7B" 32 4 1 "zeros" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-zeros"
+
+### Large model runs (TP=4, auto-detected)
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen2.5-1.5B" 32 4 1 "zeros" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-zeros"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen2.5-32B" 32 4 1 "zeros" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-zeros"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen2.5-72B" 32 4 1 "zeros" "normalize-with-std" 16 1 0.0 "no-pass-at-k" 10 "null" "debug-zeros"
+
+### Testing new Draw tasks
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawegg-boxed-tvd" "normalize-with-std" 1 32 1.0 "no-pass-at-k" 10 "null" "debug-drawegg-tvd"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawchick-tvd" "normalize-with-std" 1 32 1.0 "no-pass-at-k" 10 "null" "debug-drawchick-tvd"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawchick-tvd" "normalize-with-std" 1 2048 1.0 "no-pass-at-k" 10 "null" "D2-drawchick-tvd"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawchick-jsd" "normalize-with-std" 1 2048 1.0 "no-pass-at-k" 10 "null" "D2-drawchick-jsd"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawegg-boxed-tvd" "normalize-with-std" 1 2048 1.0 "no-pass-at-k" 10 "null" "D2-drawegg-tvd"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawegg-boxed-jsd" "normalize-with-std" 1 2048 1.0 "no-pass-at-k" 10 "null" "D2-drawegg-jsd"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-1.7B" 32 4 4 "drawchick-tvd" "normalize-with-std" 1 2048 1.0 "no-pass-at-k" 10 "null" "D2-drawchick-tvd"
+
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawchick-jsd" "normalize-with-std" 1 2048 1.0 "no-pass-at-k" 10 "null" "D3-drawchick-jsd-nopenalty"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawegg-boxed-jsd" "normalize-with-std" 1 2048 1.0 "no-pass-at-k" 10 "null" "D3-drawegg-jsd-nopenalty"
+
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "/home/s5j/asims.s5j/Documents/esvllm-outer/hyperscale-es-vllm/tmp/merged_model" 32 4 1 "drawegg-boxed-jsd" "normalize-with-std" 1 2048 1.0 "no-pass-at-k" 10 "null" "D3-drawegg-jsd-nopenalty"
