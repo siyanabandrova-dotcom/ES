@@ -1,43 +1,51 @@
 #!/bin/bash
 
-#SBATCH --job-name=eggroll_vllm
+#SBATCH --job-name=eggroll_vllm_alv31415
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/home/s5j/asims.s5j/Documents/esvllm-outer/hyperscale-es-vllm/logs/multinode_n4-%j.log
+#SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/multinode_n4-%j.log
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks-per-node=1
 
 # --- Create logs directory if it doesn't exist ---
-LOG_DIR="$HOME/Documents/esvllm-outer/hyperscale-es-vllm/logs"
-mkdir -p $LOG_DIR
+LOG_DIR="/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/"
+mkdir -p "$LOG_DIR"
 
 echo "---------------------------------"
 echo "Starting job $SLURM_JOB_ID on $(hostname)"
 echo "Nodes involved: $SLURM_JOB_NODELIST"
 echo "Running on GPU(s): $(nvidia-smi --query-gpu=gpu_name --format=csv,noheader)"
 echo "Number of GPUs per node: $(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
-echo "Log file: $LOG_DIR/es_lora_$SLURM_JOB_ID.log"
+echo "Log file: $LOG_DIR/multinode_n4-$SLURM_JOB_ID.log"
 echo "---------------------------------"
 
-# --- Parse Command-Line Arguments ---
-sigma=${1}
-learning_rate=${2}
-max_tokens=${3}
-model_name=${4}
-population_size=${5}
-steps_per_adapter=${6}
-lora_r=${7}
-task=${8}
-normalize_with_std=${9}
-prompt_batch_size=${10}
-samples_per_prompt=${11}
-temperature=${12}
-pass_at_k=${13}
-steps_per_eval=${14}
-sub_dataset_size=${15}
-name_prefix=${16}
+# -----------------------------------------
+# User-settable parameters (edit these)
+# -----------------------------------------
+sigma="0.001"
+learning_rate="0.001"
+max_tokens="32"
+model_name="Qwen/Qwen2.5-32B"
+population_size="32"
+steps_per_adapter="4"
+lora_r="1"
+task="zeros"
+# If you want the flag enabled, set normalize_with_std="normalize-with-std"
+# To disable, set normalize_with_std="" (empty string)
+normalize_with_std="normalize-with-std"
+prompt_batch_size="16"
+samples_per_prompt="1"
+temperature="0.0"
+# If you want the flag enabled, set pass_at_k="pass-at-k" (or "no-pass-at-k")
+# To disable/omit, set pass_at_k="no-pass-at-k"
+pass_at_k="no-pass-at-k"
+steps_per_eval="10"
+# Set to "null" or "None" or empty string to use full dataset
+sub_dataset_size="null"
+name_prefix="debug-oom-n4"
 
+# -----------------------------------------
 
 # --- Echo parameters for logging ---
 echo "Parameters:"
@@ -67,24 +75,23 @@ fi
 
 # --- Activate Environment ---
 echo "Activating virtual environment..."
-source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate
+source "$SCRATCH/uv_envs/vllm_env/.venv/bin/activate"
 
 # --- Set WandB directory ---
-export WANDB_DIR=$SCRATCH/for_esvllm/wandb
+export WANDB_DIR="$SCRATCH/for_esvllm/wandb"
 
 # --- Force Hugging Face to use offline mode (avoid rate limiting) ---
 # export HF_HUB_OFFLINE=1
 
 # --- Change to Working Directory ---
 echo "Changing to working directory..."
-cd $HOME/Documents/esvllm-outer/hyperscale-es-vllm
+cd "$HOME/hyperscale/hyperscale-es-vllm" || exit 1
 
 # --- Clean up leftover shared memory directories from previous jobs (on all nodes) ---
 echo "Cleaning up /dev/shm from previous jobs on all nodes..."
 echo "Current job ID: $SLURM_JOB_ID"
-srun --nodes=$SLURM_JOB_NUM_NODES --ntasks=$SLURM_JOB_NUM_NODES bash -c '
+srun --nodes="$SLURM_JOB_NUM_NODES" --ntasks="$SLURM_JOB_NUM_NODES" bash -c '
     echo "$(hostname): Cleaning /dev/shm..."
-    # Remove any old es_lora directories (from previous jobs)
     chmod -R u+rwx /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
     rm -rf /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
     echo "$(hostname): Cleanup complete"
@@ -140,23 +147,35 @@ python -c "import ray; ray.init(address='auto'); print('Ray Cluster Resources:',
 # --- Run the Python Script (Head Node Only) ---
 echo "Starting Python script..."
 # Note: The python script connects to the Ray cluster we just built
+
+# Build flag strings for optional flags (only add if non-empty)
+NORMALIZE_FLAG=""
+if [[ -n "$normalize_with_std" ]]; then
+    NORMALIZE_FLAG="--${normalize_with_std}"
+fi
+
+PASSATK_FLAG=""
+if [[ -n "$pass_at_k" ]]; then
+    PASSATK_FLAG="--${pass_at_k}"
+fi
+
 python es_lora_multinode.py \
-    --sigma $sigma \
-    --learning-rate $learning_rate \
-    --max-tokens $max_tokens \
-    --model-name $model_name \
-    --population-size $population_size \
-    --steps-per-adapter $steps_per_adapter \
-    --lora-r $lora_r \
-    --task $task \
-    --${normalize_with_std} \
-    --prompt-batch-size $prompt_batch_size \
-    --samples-per-prompt $samples_per_prompt \
-    --temperature $temperature \
-    --${pass_at_k} \
-    --steps-per-eval $steps_per_eval \
+    --sigma "$sigma" \
+    --learning-rate "$learning_rate" \
+    --max-tokens "$max_tokens" \
+    --model-name "$model_name" \
+    --population-size "$population_size" \
+    --steps-per-adapter "$steps_per_adapter" \
+    --lora-r "$lora_r" \
+    --task "$task" \
+    $NORMALIZE_FLAG \
+    --prompt-batch-size "$prompt_batch_size" \
+    --samples-per-prompt "$samples_per_prompt" \
+    --temperature "$temperature" \
+    $PASSATK_FLAG \
+    --steps-per-eval "$steps_per_eval" \
     $DATASET_SIZE_CMD \
-    --name-prefix $name_prefix \
+    --name-prefix "$name_prefix" \
     --use-wandb
 
 PYTHON_EXIT_CODE=$?
@@ -178,12 +197,11 @@ echo "Ray cluster stopped"
 # Clean up shared memory directories on all nodes (best effort)
 echo "Cleaning up /dev/shm directories on all nodes..."
 if [ -n "$SLURM_JOB_NUM_NODES" ] && [ -n "$SLURM_JOB_NODELIST" ]; then
-    srun --nodes=$SLURM_JOB_NUM_NODES --ntasks=$SLURM_JOB_NUM_NODES bash -c '
+    srun --nodes="$SLURM_JOB_NUM_NODES" --ntasks="$SLURM_JOB_NUM_NODES" bash -c '
         chmod -R u+rwx /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
         rm -rf /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
     ' || true
 else
-    # Fallback: at least clean the head node
     chmod -R u+rwx /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
     rm -rf /dev/shm/es_lora_population_async_* /dev/shm/outputs_es_lora 2>/dev/null || true
 fi

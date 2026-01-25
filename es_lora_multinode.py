@@ -102,7 +102,7 @@ class Args:
                 "Qwen/Qwen2.5-32B-Instruct": 4,
                 "Qwen/Qwen2.5-72B": 4,
                 "Qwen/Qwen2.5-72B-Instruct": 4,
-                # "Qwen/Qwen2.5-1.5B": 4, # for debugging tp
+                "Qwen/Qwen2.5-1.5B": 2, # for debugging tp
             }
 
             # Check if model_name matches any pattern
