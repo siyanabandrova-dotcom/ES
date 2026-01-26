@@ -20,7 +20,8 @@ import ray
 from ray.util.placement_group import placement_group, remove_placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from accelerate import init_empty_weights
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from vllm import LLM, SamplingParams
 from vllm.utils import get_ip, get_open_port
 import tyro
@@ -1145,13 +1146,18 @@ def main(args: Args):
         task_type="CAUSAL_LM"
     )
 
-    # Load on CPU solely to extract PEFT shapes and config for the Head Node's logic.
-    # Do NOT save this to disk for the workers; workers load 'args.model_name' directly.
+    # Create a "Phantom Model" from which to extract the necessary shapes
+    # This means that we don't need the whole model to CPU in order to get the shapes necessary for LoRA
     print("MAIN: Loading base model to CPU for structure extraction...", flush=True)
     sys.stdout.flush()
-    base_model_pure_hf_host = AutoModelForCausalLM.from_pretrained(
-        args.model_name, dtype=torch.float16, device_map="cpu", trust_remote_code=True
-    )
+
+    base_model_pure_hf_host = None 
+
+    config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True)
+
+    with init_empty_weights():
+        base_model_pure_hf_host = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+
     print("MAIN: Base model loaded", flush=True)
     sys.stdout.flush()
 
@@ -1164,15 +1170,30 @@ def main(args: Args):
     # Capture initial states to broadcast to workers
     print("MAIN: Capturing PEFT state dict...", flush=True)
     sys.stdout.flush()
-    peft_state_dict = copy.deepcopy(peft_model.state_dict())
-    peft_shapes_dict = {name: x.shape for name, x in peft_model.named_parameters() if name.endswith(".base_layer.weight")}
+
+    # IMPORTANT FIX: Since the model is on 'meta', state_dict() returns empty tensors.
+    # We create a REAL dictionary on CPU for the Master Weights.
+    peft_state_dict = {}
+    for name, param in peft_model.named_parameters():
+        if "lora_" in name:
+            # Allocate real memory on CPU (LoRA is small, ~13MB for 72B model)
+            peft_state_dict[name] = torch.zeros(param.shape, device="cpu", dtype=torch.float16)
+            
+            # Initialize them so we aren't starting at zero
+            if "lora_A" in name:
+                torch.nn.init.kaiming_uniform_(peft_state_dict[name], a=math.sqrt(5))
+            elif "lora_B" in name:
+                torch.nn.init.zeros_(peft_state_dict[name])
+
+    # Now capture the shapes for the ES logic
+    peft_shapes_dict = {name: x.shape for name, x in peft_model.named_parameters() if name.endswith(".base_layer.weight")}    
     lora_config_dict = lora_config.to_dict()
     if "target_modules" in lora_config_dict and isinstance(lora_config_dict["target_modules"], (set, tuple)):
         lora_config_dict["target_modules"] = list(lora_config_dict["target_modules"])
 
     print("MAIN: Cleaning up CPU model...", flush=True)
     sys.stdout.flush()
-    del base_model_pure_hf_host
+    del base_model_pure_hf_host, peft_model
     gc.collect()
     if torch.cuda.is_available(): torch.cuda.empty_cache()
     print("Base Checkpoint structure ready.", flush=True)
@@ -1689,7 +1710,7 @@ def main(args: Args):
             task_state = {}
             if hasattr(task, 'get_state'):
                 task_state = task.get_state()
-
+            """
             # Save checkpoint
             save_checkpoint(
                 checkpoint_dir=args.checkpoint_dir,
@@ -1699,6 +1720,7 @@ def main(args: Args):
                 args=args,
                 fitnesses_so_far=fitnesses_so_far
             )
+            """
 
             checkpoint_save_time = time.time() - checkpoint_save_start
             print(f"Checkpoint saved in {checkpoint_save_time:.4f}s", flush=True)
