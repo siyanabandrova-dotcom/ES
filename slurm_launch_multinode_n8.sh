@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=eggroll_vllm_alv31415_increase_pop_size
+#SBATCH --job-name=eggroll_vllm_alv31415_decrease_pop_size
 #SBATCH --nodes=8
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
@@ -29,7 +29,7 @@ sigma="0.002"
 learning_rate="0.001"
 max_tokens="4096"
 model_name="Qwen/Qwen1.5-110B"
-population_size="1024"
+population_size="256"
 steps_per_adapter="4"
 lora_r="1"
 task="math2:deepscaler40k"
