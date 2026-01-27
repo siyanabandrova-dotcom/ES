@@ -922,11 +922,11 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
                 enable_lora=True,
                 max_loras=(population_size + num_engines - 1) // num_engines,
                 max_lora_rank=max(lora_r, 8),
-                gpu_memory_utilization=0.95,  # Conservative to reduce overall memory pressure
+                gpu_memory_utilization=0.90,  # Conservative to reduce overall memory pressure
                 trust_remote_code=True,
-                max_num_seqs=256,  # CRITICAL: Aggressive limit to prevent CPU RAM exhaustion
-                max_model_len=max(1024, 1024 + max_tokens),  # Dynamic based on generation length
-                max_num_batched_tokens=32768 * 2,
+                max_num_seqs=384,  # CRITICAL: Aggressive limit to prevent CPU RAM exhaustion
+                max_model_len=max(1024, 512 + max_tokens),  # Dynamic based on generation length
+                max_num_batched_tokens=args.prompt_batch_size * 2 * 512,
                 load_format="auto",  # Let vLLM choose the most efficient loading method
             )
             for strategy in strategies
@@ -954,19 +954,21 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
     engines = [
         ray.remote(num_cpus=0, num_gpus=0, scheduling_strategy=strategy)(ESNcclLLM).remote(
             model=model_name,
-            tensor_parallel_size=1,
+            tensor_parallel_size=tensor_parallel_size,
             distributed_executor_backend="ray",
             worker_extension_cls="es_lora_multinode.WorkerExtension",
             dtype="auto",
-            enable_prefix_caching=False,
-            enforce_eager=False,
+            enable_prefix_caching=True,
+            # enforce_eager=False,
+            enforce_eager=True,  # Required for LoRA + TP > 1
             enable_lora=True,
             max_loras=(population_size + num_engines - 1) // num_engines,
             max_lora_rank=max(lora_r, 8),
-            gpu_memory_utilization=0.75,  # Conservative to reduce overall memory pressure
+            gpu_memory_utilization=0.90,  # Conservative to reduce overall memory pressure
             trust_remote_code=True,
-            max_num_seqs=8,  # CRITICAL: Aggressive limit to prevent CPU RAM exhaustion
-            max_model_len=max(1024, 2 * max_tokens),  # Dynamic based on generation length (2x for prompt+generation)
+            max_num_seqs=384,  # CRITICAL: Aggressive limit to prevent CPU RAM exhaustion
+            max_model_len=max(1024, 512 + max_tokens),  # Dynamic based on generation length
+            max_num_batched_tokens=args.prompt_batch_size * 2 * 512,
             load_format="auto",  # Let vLLM choose the most efficient loading method
         )
         for strategy in strategies

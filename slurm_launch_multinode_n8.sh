@@ -36,7 +36,7 @@ task="math2:deepscaler40k"
 # If you want the flag enabled, set normalize_with_std="normalize-with-std"
 # To disable, set normalize_with_std="" (empty string)
 normalize_with_std=""
-prompt_batch_size="16"
+prompt_batch_size="32"
 samples_per_prompt="1"
 temperature="0.0"
 # If you want the flag enabled, set pass_at_k="pass-at-k" (or "no-pass-at-k")
@@ -45,7 +45,7 @@ pass_at_k="no-pass-at-k"
 steps_per_eval="10"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="math-deepscaler-n8"
+name_prefix="math-deepscaler-n8-throughput"
 
 # -----------------------------------------
 
