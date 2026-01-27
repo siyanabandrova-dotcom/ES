@@ -104,6 +104,7 @@ class Args:
                 "Qwen/Qwen2.5-32B-Instruct": 4,
                 "Qwen/Qwen2.5-72B": 4,
                 "Qwen/Qwen2.5-72B-Instruct": 4,
+                "Qwen/Qwen1.5-110B": 4,
                 "Qwen/Qwen2.5-1.5B": 2, # for debugging tp
             }
 
@@ -915,16 +916,17 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
                 distributed_executor_backend="ray",
                 worker_extension_cls="es_lora_multinode.WorkerExtension",
                 dtype="auto",
-                enable_prefix_caching=False,
+                enable_prefix_caching=True,
                 # enforce_eager=False,
                 enforce_eager=True,  # Required for LoRA + TP > 1
                 enable_lora=True,
                 max_loras=(population_size + num_engines - 1) // num_engines,
                 max_lora_rank=max(lora_r, 8),
-                gpu_memory_utilization=0.75,  # Conservative to reduce overall memory pressure
+                gpu_memory_utilization=0.95,  # Conservative to reduce overall memory pressure
                 trust_remote_code=True,
-                max_num_seqs=8,  # CRITICAL: Aggressive limit to prevent CPU RAM exhaustion
-                max_model_len=max(1024, 2 * max_tokens),  # Dynamic based on generation length
+                max_num_seqs=256,  # CRITICAL: Aggressive limit to prevent CPU RAM exhaustion
+                max_model_len=max(1024, 1024 + max_tokens),  # Dynamic based on generation length
+                max_num_batched_tokens=32768 * 2,
                 load_format="auto",  # Let vLLM choose the most efficient loading method
             )
             for strategy in strategies
@@ -1710,7 +1712,7 @@ def main(args: Args):
             task_state = {}
             if hasattr(task, 'get_state'):
                 task_state = task.get_state()
-            """
+            
             # Save checkpoint
             save_checkpoint(
                 checkpoint_dir=args.checkpoint_dir,
@@ -1720,7 +1722,6 @@ def main(args: Args):
                 args=args,
                 fitnesses_so_far=fitnesses_so_far
             )
-            """
 
             checkpoint_save_time = time.time() - checkpoint_save_start
             print(f"Checkpoint saved in {checkpoint_save_time:.4f}s", flush=True)
