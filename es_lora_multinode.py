@@ -968,7 +968,7 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
             trust_remote_code=True,
             max_num_seqs=384,  # CRITICAL: Aggressive limit to prevent CPU RAM exhaustion
             max_model_len=max(1024, 512 + max_tokens),  # Dynamic based on generation length
-            max_num_batched_tokens=args.prompt_batch_size * 2 * 1024,
+            max_num_batched_tokens=args.prompt_batch_size * 2 * 512,
             load_format="auto",  # Let vLLM choose the most efficient loading method
         )
         for strategy in strategies
