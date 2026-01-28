@@ -59,7 +59,24 @@ def extract_model_answer(text, ans_format="none"):
                     return text, "answer extracted"
                 else:
                     return None, "No regex match found"
-        
+        elif ans_format == "answer_tags":
+            match = re.search(r'<answer>(.*?)</answer>', text, re.DOTALL)
+            if match:
+                text = match.group(1).strip()
+                
+                regex_match = re.findall(regex_pattern, text)
+                if regex_match:
+                    regex_match = regex_match[0]
+                    if isinstance(regex_match, tuple):
+                        regex_match = [m for m in regex_match if m][0]
+                    text = regex_match.strip()
+                
+                for regex in regexes_to_ignore:
+                    text = re.sub(regex, "", text)
+                
+                return text, "answer extracted"
+            else:
+                return None, "No `<answer>` tags found"
         else:
             raise ValueError(f"Unknown {ans_format=}")
 
@@ -131,7 +148,7 @@ def boxed_reward_fn(model_answer, gt_answer, fast=False,):
     return is_correct
 
 class MathTask2:
-    def __init__(self, batch_size, seed, tokenizer=None, dataset_name="gsm8k", datset_size=None, apply_chat_template=False):
+    def __init__(self, batch_size, seed, tokenizer=None, dataset_name="gsm8k", datset_size=None, apply_chat_template=False, answer_format="none"):
         self.dataset_name = dataset_name
         dataset_names_dict = {
             "gsm8k": ("axon-rl/GSM-8k", "train", True),
@@ -165,6 +182,7 @@ class MathTask2:
         self.apply_chat_template = apply_chat_template
         self.tokenizer = tokenizer
         self.batch_size = batch_size
+        self.ans_format = answer_format
         if is_train:
             self.idx = 0
 
@@ -180,7 +198,10 @@ class MathTask2:
             raise ValueError(f"Unexpected answer type: {type(gt_answer)}")
 
         # check against all possible correct answers
-        model_answer = extract_answer(generation)
+        if self.ans_format == "answer_tags":
+            model_answer, _ = extract_model_answer(generation, ans_format = self.ans_format)
+        else:
+            model_answer = extract_answer(generation)
         if model_answer is None:
             is_correct = False
         else:
@@ -191,7 +212,11 @@ class MathTask2:
         return is_correct, model_answer
     
     def _format_conversation(self, example):
-        instruction_str = "Please reason step-by-step concisely, and put your final answer within \\boxed{ }."
+        if self.ans_format == "answer_tags":
+            instruction_str = "Please reason step-by-step concisely, and put your final answer within answer tags <answer> </answer>."
+        else:
+            instruction_str = "Please reason step-by-step concisely, and put your final answer within \\boxed{ }."
+        
         problem = f"{example['problem']}\n{instruction_str}"
         if self.apply_chat_template:
             return self.tokenizer.apply_chat_template(

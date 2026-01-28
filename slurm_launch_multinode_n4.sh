@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=eggroll_vllm_alv31415
+#SBATCH --job-name=eggroll_vllm_answer
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
@@ -23,14 +23,14 @@ echo "---------------------------------"
 # -----------------------------------------
 # User-settable parameters (edit these)
 # -----------------------------------------
-sigma="0.002"
+sigma="0.001"
 learning_rate="0.001"
 max_tokens="4096"
-model_name="Qwen/Qwen2.5-72B"
-population_size="512"
+model_name="Qwen/Qwen2.5-32B-Instruct"
+population_size="128"
 steps_per_adapter="4"
 lora_r="1"
-task="math2:deepscaler40k"
+task="math2-answer-format:deepscaler40k"
 # If you want the flag enabled, set normalize_with_std="normalize-with-std"
 # To disable, set normalize_with_std="" (empty string)
 normalize_with_std=""
@@ -43,7 +43,7 @@ pass_at_k="no-pass-at-k"
 steps_per_eval="10"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="math-deepscaler-n8"
+name_prefix="paper-answer-format"
 
 # -----------------------------------------
 

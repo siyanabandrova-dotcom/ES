@@ -1234,6 +1234,17 @@ def main(args: Args):
             datset_size=args.sub_dataset_size,
             end_token=None
         )
+    elif args.task.startswith("math2-answer-tags:"):
+        dataset_name = args.task.split("math2-answer-tags:")[1]
+        task = MathTask2(
+            batch_size=args.prompt_batch_size,
+            seed=args.base_seed,
+            # tokenizer=tokenizer,
+            dataset_name=dataset_name,
+            datset_size=args.sub_dataset_size,
+            apply_chat_template=False,
+            answer_format="answer_tags"
+        )
     elif args.task.startswith("math2:"):
         dataset_name = args.task.split("math2:")[1]
         task = MathTask2(
