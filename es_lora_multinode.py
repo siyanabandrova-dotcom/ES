@@ -398,36 +398,8 @@ class WorkerExtension:
                 # Cast gradient to model dtype (float16/bfloat16)
                 grad_shard = gradient.to(dtype=target_param.dtype)
                 
-                # Handle Sharding (Tensor Parallelism) logic for updates
-                # If we are simply adding, we need to make sure we match the vLLM shard.
-                # For Row Parallel (q, k, v, gate, up): dimension 0 is sharded.
-                # For Col Parallel (o, down): dimension 1 is sharded.
-                
-                # The logic above (slice_obj) generally handles finding "where this fits in the full matrix".
-                # But vLLM `target_param` is ALREADY sharded.
-                # We need to intersect the "update region" with the "local shard region".
-                
-                # NOTE: For simplicity in this fix, we assume standard vLLM sharding patterns.
-                # If target_param shape matches slice size, apply directly.
-                # If target_param is a shard of the update, we crop the update.
-                
                 try:
                     if isinstance(slice_obj, tuple): # Column parallel special case
-                        # gradient is [H, Full_Intermediate]. target is [H, Sharded_Intermediate]
-                        # We need to take the slice of the gradient that corresponds to this rank.
-                        # This is complex to calculate without knowing rank offsets.
-                        # BUT: vLLM loads weights linearly. 
-                        # If slice_obj is (slice(None), slice(0, target_param.shape[1])), 
-                        # it implies we simply take the first N columns of the update? 
-                        # No, that's only for rank 0.
-                        
-                        # Fallback for simplicity: In TP, vLLM shards are usually contiguous.
-                        # However, correctly handling TP offset locally is hard without extra metadata.
-                        # FORTUNATELY: The user's original `map_peft_updates_to_vllm` handled this by:
-                        # "if vllm_size < weight_update.shape[1]: weight_shard = weight_update[:, :vllm_size]"
-                        # This implies they assume Rank 0 always takes the *start* of the weight.
-                        # Since this function ONLY runs on gpu_rank 0 (Master), and we assume 
-                        # standard vLLM loading, we will stick to the user's original logic:
                         
                         if target_param.shape[1] < grad_shard.shape[1]:
                              grad_shard = grad_shard[:, :target_param.shape[1]]
@@ -435,18 +407,6 @@ class WorkerExtension:
                         target_param.data.add_(grad_shard)
                         
                     elif isinstance(slice_obj, slice): # Row parallel (qkv, gate_up)
-                        # The update is for a specific block (e.g. Q). 
-                        # The target is [Q_shard + K_shard + V_shard] or similar.
-                        # This is tricky.
-                        
-                        # Revert to User's Original Logic for safety, but applied locally:
-                        # User logic: vllm_updates_dict[vllm_name][start:end] += weight_shard
-                        
-                        # We just need to ensure [start:end] fits in target_param.
-                        # If target_param is sharded, it might be smaller than start+end.
-                        # Given the user's original code didn't do complex TP offset math, 
-                        # it assumes the TP splitting happens such that Rank 0 holds the relevant parts 
-                        # or the script relies on NCCL broadcast later to sync up.
                         
                         # Safe Application:
                         param_size = target_param.shape[0]

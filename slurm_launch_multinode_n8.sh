@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=eggroll_vllm_answer_72B_instruct
+#SBATCH --job-name=eggroll_vllm_answer_72B
 #SBATCH --nodes=8
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
@@ -28,7 +28,7 @@ echo "---------------------------------"
 sigma="0.001"
 learning_rate="0.001"
 max_tokens="4096"
-model_name="Qwen/Qwen2.5-72B-Instruct"
+model_name="Qwen/Qwen2.5-72B"
 population_size="128"
 steps_per_adapter="4"
 lora_r="1"
@@ -45,7 +45,7 @@ pass_at_k="no-pass-at-k"
 steps_per_eval="10"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="paper-answer-format"
+name_prefix="paper-answer-format-truncate"
 
 # -----------------------------------------
 
