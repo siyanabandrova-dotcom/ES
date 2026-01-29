@@ -72,7 +72,7 @@ class Args:
     base_seed: int = 0
     sub_dataset_size: int = None
     steps_per_eval: int = 10 # -1 to disable
-    eval_batch_size: int = 32
+    eval_batch_size: int = 128
     es_update_chunk_size: int = None  # Auto-select based on lora_r if None
 
     # --- WandB ---
@@ -774,8 +774,10 @@ class ESNcclLLM(LLM):
             # Collect all responses for this prompt
             responses = [o.text for o in output.outputs]
 
+            truncateds = [o.finish_reason == "length" for o in output.outputs]
+
             # Get fitness using the refactored get_fitness
-            fit, model_answers, sample_fitnesses, task_info = task_obj.get_fitness(responses, gt_answer, pass_at_k=args.pass_at_k)
+            fit, model_answers, sample_fitnesses, task_info = task_obj.get_fitness(responses, truncateds, gt_answer, pass_at_k=args.pass_at_k)
 
             # Collect task-specific info
             for k, v in task_info.items():
@@ -1298,9 +1300,10 @@ def main(args: Args):
         stop=[tokenizer.eos_token],
     )
     do_eval = False
-    if "math2:" in args.task and args.steps_per_eval > 0:
+    if "math2" in args.task and args.steps_per_eval > 0:
         do_eval = True
         print("--- Configuring Evaluation Tasks ---")
+        answer_format = "answer_tags" if "answer-tags" in args.task else "none"
 
         # Ensure eval_batch_size is divisible by num_engines for multi-GPU
         if args.eval_batch_size % args.num_engines != 0:
@@ -1322,6 +1325,7 @@ def main(args: Args):
             dataset_name="math-eval",
             datset_size=None,
             apply_chat_template=task.apply_chat_template,
+            answer_format=answer_format
         )
         print(f"Training on {args.task}, evaluating on {eval_task.split_names}.")
 
@@ -1727,6 +1731,7 @@ def main(args: Args):
                 task_state = task.get_state()
             
             # Save checkpoint
+            """
             save_checkpoint(
                 checkpoint_dir=args.checkpoint_dir,
                 es_step=es_step,
@@ -1735,6 +1740,7 @@ def main(args: Args):
                 args=args,
                 fitnesses_so_far=fitnesses_so_far
             )
+            """
 
             checkpoint_save_time = time.time() - checkpoint_save_start
             print(f"Checkpoint saved in {checkpoint_save_time:.4f}s", flush=True)

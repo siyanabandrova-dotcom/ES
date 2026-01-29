@@ -4,12 +4,12 @@ from datasets import load_dataset
 from typing import List, Optional
 from egg_img import EGG_IMG, CHICK_IMG
 
-def general_get_fitness(task_obj, generations, answer, pass_at_k: bool = False):
+def general_get_fitness(task_obj, generations, truncateds, answer, pass_at_k: bool = False):
         if len(generations) == 0:
             # Edge case: no generations (shouldn't happen in normal operation)
             return 0.0, (), np.array([])
 
-        fitnesses, model_answers = zip(*[task_obj.get_fitness_single_sample(g, answer) for g in generations])
+        fitnesses, model_answers = zip(*[task_obj.get_fitness_single_sample(g, t, answer) for g, t in zip(generations, truncateds)])
         fitnesses = np.array(fitnesses)
         if pass_at_k:
             fitness = np.max(fitnesses)
@@ -64,16 +64,9 @@ def extract_model_answer(text, ans_format="none"):
             if match:
                 text = match.group(1).strip()
                 
-                regex_match = re.findall(regex_pattern, text)
-                if regex_match:
-                    regex_match = regex_match[0]
-                    if isinstance(regex_match, tuple):
-                        regex_match = [m for m in regex_match if m][0]
-                    text = regex_match.strip()
-                
                 for regex in regexes_to_ignore:
                     text = re.sub(regex, "", text)
-                
+            
                 return text, "answer extracted"
             else:
                 return None, "No `<answer>` tags found"
@@ -187,7 +180,7 @@ class MathTask2:
             self.idx = 0
 
     @staticmethod
-    def check_correct(generation: str, gt_answer: str) -> bool:
+    def check_correct(generation: str, gt_answer: str, ans_format: str = "none") -> bool:
         """Check if the action is correct."""
         # get correct answers from the dataset entry
         if isinstance(gt_answer, (str, float, int)):
@@ -198,8 +191,8 @@ class MathTask2:
             raise ValueError(f"Unexpected answer type: {type(gt_answer)}")
 
         # check against all possible correct answers
-        if self.ans_format == "answer_tags":
-            model_answer, _ = extract_model_answer(generation, ans_format = self.ans_format)
+        if ans_format == "answer_tags":
+            model_answer, _ = extract_model_answer(generation, ans_format = ans_format)
         else:
             model_answer = extract_answer(generation)
         if model_answer is None:
@@ -213,7 +206,7 @@ class MathTask2:
     
     def _format_conversation(self, example):
         if self.ans_format == "answer_tags":
-            instruction_str = "Please reason step-by-step concisely, and put your final answer within answer tags <answer> </answer>."
+            instruction_str = "Please reason step-by-step concisely."
         else:
             instruction_str = "Please reason step-by-step concisely, and put your final answer within \\boxed{ }."
         
@@ -249,11 +242,13 @@ class MathTask2:
             examples.extend([split_dataset[i % split_length] for i in indices])
         return self._format_examples(examples)
     
-    def get_fitness(self, generations, gt_answer, pass_at_k: bool = False):
-        return general_get_fitness(self, generations, gt_answer, pass_at_k)
+    def get_fitness(self, generations, truncateds, gt_answer, pass_at_k: bool = False):
+        return general_get_fitness(self, generations, truncateds, gt_answer, pass_at_k)
     
-    def get_fitness_single_sample(self, generation, gt_answer):
-        is_correct, model_answer = self.check_correct(generation, gt_answer)
+    def get_fitness_single_sample(self, generation, truncated, gt_answer):
+        if truncated:
+            return 0.0, None
+        is_correct, model_answer = self.check_correct(generation, gt_answer, ans_format = self.ans_format)
         return 1.0 if is_correct else 0.0, model_answer
 
 class MathTask:
