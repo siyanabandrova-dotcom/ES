@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=eggroll_vllm_answer_32B
+#SBATCH --job-name=eggroll_vllm_answer_332B
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
@@ -26,7 +26,7 @@ echo "---------------------------------"
 sigma="0.001"
 learning_rate="0.001"
 max_tokens="4096"
-model_name="Qwen/Qwen2.5-32B"
+model_name="Qwen/Qwen3-32B"
 population_size="128"
 steps_per_adapter="4"
 lora_r="1"

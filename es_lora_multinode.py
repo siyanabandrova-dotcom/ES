@@ -99,6 +99,7 @@ class Args:
                 # "Qwen/Qwen3-4B": 2, # for debugging tp
                 "Qwen/Qwen3-30B": 2,
                 "Qwen/Qwen3-30B-Base": 2,
+                "Qwen/Qwen3-32B": 4,
                 "Qwen/Qwen2.5-14B": 2,
                 "Qwen/Qwen2.5-32B": 4,
                 "Qwen/Qwen2.5-32B-Instruct": 4,
@@ -880,16 +881,16 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
                 dtype="auto",
                 enable_prefix_caching=True,
                 # enforce_eager=False,
-                enforce_eager=True,  # Required for LoRA + TP > 1
+                enforce_eager=True,  # required for LoRA + TP > 1
                 enable_lora=True,
                 max_loras=(population_size + num_engines - 1) // num_engines,
                 max_lora_rank=max(lora_r, 8),
-                gpu_memory_utilization=0.90,  # Conservative to reduce overall memory pressure
+                gpu_memory_utilization=0.90,  # conservative to reduce overall memory pressure
                 trust_remote_code=True,
-                max_num_seqs=384,  # CRITICAL: Aggressive limit to prevent CPU RAM exhaustion
-                max_model_len=max(1024, 512 + max_tokens),  # Dynamic based on generation length
-                max_num_batched_tokens=args.prompt_batch_size * 2 * 512,
-                load_format="auto",  # Let vLLM choose the most efficient loading method
+                max_num_seqs=384,  # allows parallel processing of up to 384 sequences per engine for higher throughput
+                max_model_len=max(1024, 512 + max_tokens),  # dynamic based on generation length
+                max_num_batched_tokens=args.prompt_batch_size * 1024, # controls maximum tokens processed per forward pass; larger batches = better GPU utilization and throughput
+                load_format="auto",  # let vLLM choose the most efficient loading method
             )
             for strategy in strategies
         ]
@@ -922,18 +923,17 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
             dtype="auto",
             enable_prefix_caching=True,
             # enforce_eager=False,
-            enforce_eager=True,  # Required for LoRA + TP > 1
+            enforce_eager=True,  # required for LoRA + TP > 1
             enable_lora=True,
             max_loras=(population_size + num_engines - 1) // num_engines,
             max_lora_rank=max(lora_r, 8),
-            gpu_memory_utilization=0.90,  # Conservative to reduce overall memory pressure
+            gpu_memory_utilization=0.90,  # conservative to reduce overall memory pressure
             trust_remote_code=True,
-            max_num_seqs=384,  # CRITICAL: Aggressive limit to prevent CPU RAM exhaustion
-            max_model_len=max(1024, 512 + max_tokens),  # Dynamic based on generation length
-            max_num_batched_tokens=args.prompt_batch_size * 2 * 512,
-            load_format="auto",  # Let vLLM choose the most efficient loading method
+            max_num_seqs=384,  # allows parallel processing of up to 384 sequences per engine for higher throughput
+            max_model_len=max(1024, 512 + max_tokens),  # dynamic based on generation length
+            max_num_batched_tokens=args.prompt_batch_size * 1024, # controls maximum tokens processed per forward pass; larger batches = better GPU utilization and throughput
+            load_format="auto",  # let vLLM choose the most efficient loading method
         )
-        for strategy in strategies
     ]
     return engines, pgs
 
