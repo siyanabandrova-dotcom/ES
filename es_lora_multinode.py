@@ -106,6 +106,7 @@ class Args:
                 "Qwen/Qwen2.5-72B": 4,
                 "Qwen/Qwen2.5-72B-Instruct": 4,
                 "Qwen/Qwen1.5-110B": 4,
+                "Qwen/Qwen1.5-110B-Chat": 4,
                 "Qwen/Qwen2.5-1.5B": 2, # for debugging tp
             }
 

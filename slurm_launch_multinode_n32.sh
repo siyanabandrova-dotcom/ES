@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#SBATCH --job-name=eggroll_debug_n16_110b
-#SBATCH --nodes=16
+#SBATCH --job-name=eggroll_debug_n32_110b_p8k
+#SBATCH --nodes=32
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/multinode_n16-%j.log
+#SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/multinode_n32-%j.log
 #SBATCH --cpus-per-task=64
 #SBATCH --ntasks-per-node=1
 
@@ -17,7 +17,7 @@ echo "Starting job $SLURM_JOB_ID on $(hostname)"
 echo "Nodes involved: $SLURM_JOB_NODELIST"
 echo "Running on GPU(s): $(nvidia-smi --query-gpu=gpu_name --format=csv,noheader)"
 echo "Number of GPUs per node: $(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
-echo "Log file: $LOG_DIR/multinode_n16-$SLURM_JOB_ID.log"
+echo "Log file: $LOG_DIR/multinode_n32-$SLURM_JOB_ID.log"
 echo "---------------------------------"
 
 # -----------------------------------------
@@ -27,7 +27,7 @@ sigma="0.001"
 learning_rate="0.001"
 max_tokens="4096"
 model_name="Qwen/Qwen1.5-110B-Chat"
-population_size="4096"
+population_size="8192"
 steps_per_adapter="4"
 lora_r="1"
 task="math2:deepscaler40k"
@@ -43,7 +43,7 @@ pass_at_k="no-pass-at-k"
 steps_per_eval="10"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="debug-n16"
+name_prefix="debug-n32"
 
 # -----------------------------------------
 
