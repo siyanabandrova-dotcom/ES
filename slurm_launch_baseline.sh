@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=baseline_qwen110b_eval
+#SBATCH --job-name=baseline_qwen32b_eval
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
@@ -26,17 +26,17 @@ echo "---------------------------------"
 # User-settable parameters (edit these)
 # -----------------------------------------
 max_tokens="4096"
-model_name="Qwen/Qwen1.5-110B"
+model_name="Qwen/Qwen3-32B"
 task="math2:deepscaler40k"
-prompt_batch_size="32"
+prompt_batch_size="16"
 samples_per_prompt="1"
 temperature="0.0"
 pass_at_k="no-pass-at-k"
 steps_per_eval="10"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="baseline-qwen110b-deepscaler-single-eval"
-num_iterations="55"
+name_prefix="baseline-qwen3-32b-deepscaler-single-eval"
+num_iterations="105"
 tensor_parallel_size="4"  # 4 GPUs for 110B model
 
 # -----------------------------------------

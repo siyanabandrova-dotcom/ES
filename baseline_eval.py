@@ -172,10 +172,10 @@ def generate_and_score(llm, prompts, sampling_params, task_obj, answers, args):
         # Collect all responses for this prompt
         responses = [o.text for o in output.outputs]
 
-        # Get fitness
-        fit, model_answers, sample_fitnesses, task_info = task_obj.get_fitness(
-            responses, gt_answer, pass_at_k=args.pass_at_k
-        )
+        truncateds = [o.finish_reason == "length" for o in output.outputs]
+
+        # Get fitness using the refactored get_fitness
+        fit, model_answers, sample_fitnesses, task_info = task_obj.get_fitness(responses, truncateds, gt_answer, pass_at_k=args.pass_at_k)
 
         # Collect task-specific info
         for k, v in task_info.items():
@@ -382,8 +382,6 @@ def main(args: Args):
         if args.use_wandb:
             wandb.log(eval_info_dict_all, step = step)
 
-
-        """
         # --- TRAINING SET EVALUATION ---
         # KEY: This evaluates the base model on the same batch that ES-LoRA would use at this step
         print(f"\n--- Evaluating on Training Batch {step} ---")
@@ -452,7 +450,7 @@ def main(args: Args):
     print(f"\n--- Baseline Evaluation Complete ---")
     print(f"Total time: {total_time:.2f}s")
     print(f"Final fitnesses: {fitnesses_so_far}")
-    """
+    
     if args.use_wandb:
         wandb.finish()
 
