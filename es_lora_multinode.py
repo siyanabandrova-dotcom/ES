@@ -1258,7 +1258,7 @@ def main(args: Args):
         seed=args.base_seed,
         max_tokens=args.max_tokens,
         n=args.samples_per_prompt,
-        stop=[tokenizer.eos_token],
+        stop=[tokenizer.eos_token, "<|im_end|>", "<|endoftext|>"],
     )
     do_eval = False
     if "math2" in args.task and args.steps_per_eval > 0:
@@ -1692,7 +1692,6 @@ def main(args: Args):
                 task_state = task.get_state()
             
             # Save checkpoint
-            """
             save_checkpoint(
                 checkpoint_dir=args.checkpoint_dir,
                 es_step=es_step,
@@ -1701,7 +1700,6 @@ def main(args: Args):
                 args=args,
                 fitnesses_so_far=fitnesses_so_far
             )
-            """
 
             checkpoint_save_time = time.time() - checkpoint_save_start
             print(f"Checkpoint saved in {checkpoint_save_time:.4f}s", flush=True)
