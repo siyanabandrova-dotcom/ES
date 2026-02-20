@@ -73,6 +73,9 @@ else
     DATASET_SIZE_CMD="--sub-dataset-size $sub_dataset_size"
 fi
 
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
 # --- Activate Environment ---
 echo "Activating virtual environment..."
 source "$SCRATCH/uv_envs/vllm_env/.venv/bin/activate"
