@@ -57,6 +57,7 @@ class Args:
     prompt_batch_size: int = 2
     pass_at_k: bool = False
     normalize_with_std: bool = False
+    scale_lr_in_grad: bool = False
 
     # --- LoRA Config ---
     lora_r: int = 4
@@ -96,7 +97,8 @@ class Args:
             # Maps model name patterns to recommended TP size
             TP_CONFIG = {
                 # "Qwen/Qwen3-1.7B": 2, # for debugging tp
-                # "Qwen/Qwen3-4B": 2, # for debugging tp
+                "Qwen/Qwen3-4B": 1, # for debugging tp
+                "Qwen/Qwen3-8B": 1,
                 "Qwen/Qwen3-30B": 2,
                 "Qwen/Qwen3-30B-Base": 2,
                 "Qwen/Qwen3-32B": 4,
@@ -308,7 +310,7 @@ class WorkerExtension:
                     noise_b_list.append(noise_b)
 
                 noise_a_batch = torch.stack(noise_a_list).to(self.device) * math.sqrt(args.sigma)
-                noise_b_batch = torch.stack(noise_b_list).to(self.device) * math.sqrt(args.sigma)
+                noise_b_batch = torch.stack(noise_b_list).to(self.device) * math.sqrt(args.sigma / args.lora_r) # add 1/sqrt(r) factor
                 fitness_diffs_tensor = torch.tensor(fitness_diffs, device=self.device, dtype=noise_a_batch.dtype)
 
                 if args.lora_r == 1:
@@ -326,6 +328,10 @@ class WorkerExtension:
             
             # 2. Scale gradient
             gradient = (1.0 / (args.population_size * args.sigma + 1e-8)) * layer_update * args.learning_rate
+
+            if args.scale_lr_in_grad:
+                gradient *= math.sqrt(args.population_size)
+
             del layer_update # Free the accumulation tensor
 
             # 3. Identify target vLLM parameter and apply immediately
@@ -341,10 +347,16 @@ class WorkerExtension:
                     target_param = vllm_params[target_name]
                     # Start at 0
                     slice_obj = slice(0, weight_shape[0])
-            
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: expected fused param '{target_name}' in vllm_params "
+                        f"for q_proj layer '{peft_name}', but it was not found. "
+                        f"Available keys (sample): {list(vllm_params.keys())[:5]}"
+                    )
+
             elif "self_attn.k_proj" in vllm_name:
                 target_name = vllm_name.replace("self_attn.k_proj", "self_attn.qkv_proj")
-                # Need to find offset. q_proj is usually same size as k_proj in standard attn, 
+                # Need to find offset. q_proj is usually same size as k_proj in standard attn,
                 # but GQA might differ. We need to find q_proj size.
                 # Safe way: look up q_proj in peft_shapes_dict
                 q_name = peft_name.replace("k_proj", "q_proj")
@@ -352,6 +364,12 @@ class WorkerExtension:
                     target_param = vllm_params[target_name]
                     start = peft_shapes_dict[q_name][0]
                     slice_obj = slice(start, start + weight_shape[0])
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: could not resolve k_proj offset for '{peft_name}'. "
+                        f"fused target '{target_name}' present={target_name in vllm_params}, "
+                        f"q_name '{q_name}' present={q_name in peft_shapes_dict}."
+                    )
 
             elif "self_attn.v_proj" in vllm_name:
                 target_name = vllm_name.replace("self_attn.v_proj", "self_attn.qkv_proj")
@@ -361,6 +379,13 @@ class WorkerExtension:
                     target_param = vllm_params[target_name]
                     start = peft_shapes_dict[q_name][0] + peft_shapes_dict[k_name][0]
                     slice_obj = slice(start, start + weight_shape[0])
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: could not resolve v_proj offset for '{peft_name}'. "
+                        f"fused target '{target_name}' present={target_name in vllm_params}, "
+                        f"q_name '{q_name}' present={q_name in peft_shapes_dict}, "
+                        f"k_name '{k_name}' present={k_name in peft_shapes_dict}."
+                    )
 
             elif "self_attn.o_proj" in vllm_name:
                 # Column parallel: slice columns
@@ -371,13 +396,23 @@ class WorkerExtension:
                         slice_obj = (slice(None), slice(0, target_param.shape[1]))
                     else:
                         slice_obj = (slice(None), slice(None))
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: expected param '{vllm_name}' in vllm_params "
+                        f"for o_proj layer '{peft_name}', but it was not found."
+                    )
 
             elif "mlp.gate_proj" in vllm_name:
                 target_name = vllm_name.replace("mlp.gate_proj", "mlp.gate_up_proj")
                 if target_name in vllm_params:
                     target_param = vllm_params[target_name]
                     slice_obj = slice(0, weight_shape[0])
-            
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: expected fused param '{target_name}' in vllm_params "
+                        f"for gate_proj layer '{peft_name}', but it was not found."
+                    )
+
             elif "mlp.up_proj" in vllm_name:
                 target_name = vllm_name.replace("mlp.up_proj", "mlp.gate_up_proj")
                 gate_name = peft_name.replace("up_proj", "gate_proj")
@@ -385,6 +420,12 @@ class WorkerExtension:
                     target_param = vllm_params[target_name]
                     start = peft_shapes_dict[gate_name][0]
                     slice_obj = slice(start, start + weight_shape[0])
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: could not resolve up_proj offset for '{peft_name}'. "
+                        f"fused target '{target_name}' present={target_name in vllm_params}, "
+                        f"gate_name '{gate_name}' present={gate_name in peft_shapes_dict}."
+                    )
 
             elif "mlp.down_proj" in vllm_name:
                 # Column parallel
@@ -394,6 +435,18 @@ class WorkerExtension:
                         slice_obj = (slice(None), slice(0, target_param.shape[1]))
                     else:
                         slice_obj = (slice(None), slice(None))
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: expected param '{vllm_name}' in vllm_params "
+                        f"for down_proj layer '{peft_name}', but it was not found."
+                    )
+
+            else:
+                raise RuntimeError(
+                    f"apply_lora_es_update: unrecognised PEFT layer '{peft_name}' (vllm_name='{vllm_name}'). "
+                    f"No mapping rule exists for this layer type. "
+                    f"Expected one of: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj."
+                )
 
             # --- Apply Update ---
             if target_param is not None:
@@ -420,13 +473,13 @@ class WorkerExtension:
                             target_param.data[start:end].add_(valid_grad)
 
                     else:
-                        # No slicing, direct add
-                        if target_param.shape == grad_shard.shape:
-                            target_param.data.add_(grad_shard)
-                        else:
-                            # Fallback: try to fit
-                            sh = [min(a,b) for a,b in zip(target_param.shape, grad_shard.shape)]
-                            target_param.data[:sh[0], :sh[1]].add_(grad_shard[:sh[0], :sh[1]])
+                        # slice_obj must always be a slice or tuple by this point;
+                        # reaching here means the mapping logic above has a bug.
+                        raise AssertionError(
+                            f"apply_lora_es_update: slice_obj is {slice_obj!r} (type {type(slice_obj)}) "
+                            f"for layer '{vllm_name}'. This should be unreachable — "
+                            f"the mapping logic must have set target_param without setting slice_obj."
+                        )
 
                 except Exception as e:
                     print(f"ERROR updating {vllm_name}: {e}. Shapes: Param {target_param.shape}, Grad {grad_shard.shape}", flush=True)
@@ -651,7 +704,7 @@ class ESNcclLLM(LLM):
                     shapes=[lora_a_shape, lora_b_shape],
                 )
 
-                noise_b *= math.sqrt(args.sigma)
+                noise_b *= math.sqrt(args.sigma / args.lora_r) # add 1/sqrt(r) factor
                 noise_a *= math.sqrt(args.sigma)
 
                 # Zero out the weights (before then setting them to noise)
@@ -923,18 +976,19 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
             worker_extension_cls="es_lora_multinode.WorkerExtension",
             dtype="auto",
             enable_prefix_caching=True,
-            # enforce_eager=False,
-            enforce_eager=True,  # required for LoRA + TP > 1
+            enforce_eager=False, 
             enable_lora=True,
             max_loras=(population_size + num_engines - 1) // num_engines,
             max_lora_rank=max(lora_r, 8),
-            gpu_memory_utilization=0.90,  # conservative to reduce overall memory pressure
+            gpu_memory_utilization=0.95,  # conservative to reduce overall memory pressure
             trust_remote_code=True,
-            max_num_seqs=384,  # allows parallel processing of up to 384 sequences per engine for higher throughput
+            max_num_seqs=512,  # allows parallel processing of up to 384 sequences per engine for higher throughput
             max_model_len=max(1024, 512 + max_tokens),  # dynamic based on generation length
-            max_num_batched_tokens=args.prompt_batch_size * 1024, # controls maximum tokens processed per forward pass; larger batches = better GPU utilization and throughput
+            max_num_batched_tokens=args.prompt_batch_size * 4096, # controls maximum tokens processed per forward pass; larger batches = better GPU utilization and throughput
+            enable_chunked_prefill=True,
             load_format="auto",  # let vLLM choose the most efficient loading method
-        )
+        ) 
+        for strategy in strategies
     ]
     return engines, pgs
 
@@ -1063,6 +1117,7 @@ def main(args: Args):
     run_name += f"S{args.samples_per_prompt}-"
     run_name += f"D{args.sub_dataset_size}-" if args.sub_dataset_size is not None else ""
     run_name += f"std-" if args.normalize_with_std else "no_std-"
+    run_name += f"scale_lr-" if args.scale_lr_in_grad else "no_scale_lr-"
     run_name += f"l{args.max_tokens}-"
     run_name += f"n{args.steps_per_adapter}-"
     run_name += f"lr{args.learning_rate}-"

@@ -5,7 +5,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
 #SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/multinode_n32-%j.log
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=128
 #SBATCH --ntasks-per-node=1
 
 # --- Create logs directory if it doesn't exist ---
@@ -34,6 +34,9 @@ task="math2:deepscaler40k"
 # If you want the flag enabled, set normalize_with_std="normalize-with-std"
 # To disable, set normalize_with_std="" (empty string)
 normalize_with_std=""
+# If you want the flag enabled, set scale_lr_in_grad="scale-lr-in-grad"
+# To disable, set scale_lr_in_grad="no-scale-lr-in-grad" or "" (empty string)
+scale_lr_in_grad=""
 prompt_batch_size="16"
 samples_per_prompt="1"
 temperature="0.0"
@@ -58,6 +61,7 @@ echo "  steps_per_adapter: $steps_per_adapter"
 echo "  lora_r: $lora_r"
 echo "  task: $task"
 echo "  normalize_with_std: $normalize_with_std"
+echo "  scale_lr_in_grad: $scale_lr_in_grad"
 echo "  prompt_batch_size: $prompt_batch_size"
 echo "  samples_per_prompt: $samples_per_prompt"
 echo "  temperature: $temperature"
@@ -157,6 +161,11 @@ if [[ -n "$normalize_with_std" ]]; then
     NORMALIZE_FLAG="--${normalize_with_std}"
 fi
 
+SCALE_LR_FLAG=""
+if [[ -n "$scale_lr_in_grad" ]]; then
+    SCALE_LR_FLAG="--${scale_lr_in_grad}"
+fi
+
 PASSATK_FLAG=""
 if [[ -n "$pass_at_k" ]]; then
     PASSATK_FLAG="--${pass_at_k}"
@@ -172,6 +181,7 @@ python es_lora_multinode.py \
     --lora-r "$lora_r" \
     --task "$task" \
     $NORMALIZE_FLAG \
+    $SCALE_LR_FLAG \
     --prompt-batch-size "$prompt_batch_size" \
     --samples-per-prompt "$samples_per_prompt" \
     --temperature "$temperature" \

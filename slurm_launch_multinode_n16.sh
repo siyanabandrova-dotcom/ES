@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=eggroll_debug_n16_110b
+#SBATCH --job-name=eggroll_debug_n16_8b
 #SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
@@ -24,16 +24,19 @@ echo "---------------------------------"
 # User-settable parameters (edit these)
 # -----------------------------------------
 sigma="0.001"
-learning_rate="0.001"
+learning_rate="0.0002"
 max_tokens="4096"
-model_name="Qwen/Qwen1.5-110B-Chat"
-population_size="4096"
+model_name="Qwen/Qwen3-8B"
+population_size="16384"
 steps_per_adapter="4"
 lora_r="1"
 task="math2:deepscaler40k"
 # If you want the flag enabled, set normalize_with_std="normalize-with-std"
 # To disable, set normalize_with_std="" (empty string)
 normalize_with_std=""
+# If you want the flag enabled, set scale_lr_in_grad="scale-lr-in-grad"
+# To disable, set scale_lr_in_grad="no-scale-lr-in-grad" or "" (empty string)
+scale_lr_in_grad=""
 prompt_batch_size="16"
 samples_per_prompt="1"
 temperature="0.0"
@@ -58,6 +61,7 @@ echo "  steps_per_adapter: $steps_per_adapter"
 echo "  lora_r: $lora_r"
 echo "  task: $task"
 echo "  normalize_with_std: $normalize_with_std"
+echo "  scale_lr_in_grad: $scale_lr_in_grad"
 echo "  prompt_batch_size: $prompt_batch_size"
 echo "  samples_per_prompt: $samples_per_prompt"
 echo "  temperature: $temperature"
@@ -154,6 +158,11 @@ if [[ -n "$normalize_with_std" ]]; then
     NORMALIZE_FLAG="--${normalize_with_std}"
 fi
 
+SCALE_LR_FLAG=""
+if [[ -n "$scale_lr_in_grad" ]]; then
+    SCALE_LR_FLAG="--${scale_lr_in_grad}"
+fi
+
 PASSATK_FLAG=""
 if [[ -n "$pass_at_k" ]]; then
     PASSATK_FLAG="--${pass_at_k}"
@@ -169,6 +178,7 @@ python es_lora_multinode.py \
     --lora-r "$lora_r" \
     --task "$task" \
     $NORMALIZE_FLAG \
+    $SCALE_LR_FLAG \
     --prompt-batch-size "$prompt_batch_size" \
     --samples-per-prompt "$samples_per_prompt" \
     --temperature "$temperature" \

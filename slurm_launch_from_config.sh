@@ -9,10 +9,31 @@ set -e
 
 # --- Configuration ---
 BASE_SCRIPT="slurm_launch_multinode_n32.sh"
+TEMPLATE_FILE="experiments_template.csv"  # Set to "" to skip expansion and use CONFIG_FILE directly
 CONFIG_FILE="experiments_config.csv"
-DELAY_MINUTES=10
+EXPAND_SCRIPT="expand_config.py"
+DELAY_SECONDS=15
 EXPERIMENT_DIR="/scratch/s5j/alv31415.s5j/experiments"
 USE_DEPENDENCIES=true  # Set to false to use real-time waiting instead
+
+# =============================================================================
+# Template Expansion
+# =============================================================================
+
+if [[ -n "$TEMPLATE_FILE" ]]; then
+    if [ ! -f "$TEMPLATE_FILE" ]; then
+        echo "ERROR: Template file '$TEMPLATE_FILE' not found!"
+        exit 1
+    fi
+    if [ ! -f "$EXPAND_SCRIPT" ]; then
+        echo "ERROR: Expand script '$EXPAND_SCRIPT' not found!"
+        exit 1
+    fi
+    echo "Expanding template '$TEMPLATE_FILE' → '$CONFIG_FILE'..."
+    python3 "$EXPAND_SCRIPT" "$TEMPLATE_FILE" "$CONFIG_FILE"
+    echo "Expansion complete."
+    echo ""
+fi
 
 # =============================================================================
 # Functions
@@ -25,16 +46,31 @@ create_experiment_script() {
     local pop_size=$4
     local prompt_bs=$5
     local name=$6
-    local output_script=$7
+    local normalize_with_std=$7
+    local scale_lr_in_grad=$8
+    local num_nodes=$9
+    local gpus_per_node=${10}
+    local output_script=${11}
     
     cp "$BASE_SCRIPT" "$output_script"
     
+    # Override SBATCH directives for node/GPU count
+    local cpus_per_task=$((gpus_per_node * 72))
+    sed -i "s|^#SBATCH --nodes=.*|#SBATCH --nodes=$num_nodes|" "$output_script"
+    sed -i "s|^#SBATCH --gpus-per-node=.*|#SBATCH --gpus-per-node=$gpus_per_node|" "$output_script"
+    sed -i "s|^#SBATCH --cpus-per-task=.*|#SBATCH --cpus-per-task=$cpus_per_task|" "$output_script"
+
+    # Override user-settable variables
+    sed -i "s|^num_nodes=.*|num_nodes=\"$num_nodes\"|" "$output_script"
+    sed -i "s|^gpus_per_node=.*|gpus_per_node=\"$gpus_per_node\"|" "$output_script"
     sed -i "s|^sigma=.*|sigma=\"$sigma\"|" "$output_script"
     sed -i "s|^learning_rate=.*|learning_rate=\"$lr\"|" "$output_script"
     sed -i "s|^model_name=.*|model_name=\"$model\"|" "$output_script"
     sed -i "s|^population_size=.*|population_size=\"$pop_size\"|" "$output_script"
     sed -i "s|^prompt_batch_size=.*|prompt_batch_size=\"$prompt_bs\"|" "$output_script"
     sed -i "s|^name_prefix=.*|name_prefix=\"$name\"|" "$output_script"
+    sed -i "s|^normalize_with_std=.*|normalize_with_std=\"$normalize_with_std\"|" "$output_script"
+    sed -i "s|^scale_lr_in_grad=.*|scale_lr_in_grad=\"$scale_lr_in_grad\"|" "$output_script"
     
     chmod +x "$output_script"
 }
@@ -42,13 +78,16 @@ create_experiment_script() {
 submit_job_with_dependency() {
     local script=$1
     local dependency=$2
-    
+    local begin_offset_seconds=$3  # seconds from now to start
+
+    local begin_flag="--begin=now+${begin_offset_seconds}seconds"
+
     if [ -z "$dependency" ]; then
-        job_output=$(sbatch "$script")
+        job_output=$(sbatch "$begin_flag" "$script")
     else
-        job_output=$(sbatch --dependency=after:$dependency --begin=now+${DELAY_MINUTES}minutes "$script")
+        job_output=$(sbatch "$begin_flag" --dependency=after:$dependency "$script")
     fi
-    
+
     echo "$job_output" | grep -oP '\d+'
 }
 
@@ -68,7 +107,7 @@ echo "Config-Based Experiment Launcher"
 echo "=========================================="
 echo "Base script: $BASE_SCRIPT"
 echo "Config file: $CONFIG_FILE"
-echo "Delay between jobs: $DELAY_MINUTES minutes"
+echo "Delay between jobs: $DELAY_SECONDS seconds"
 echo "Using dependencies: $USE_DEPENDENCIES"
 echo "=========================================="
 echo ""
@@ -87,7 +126,7 @@ fi
 # Read experiments from config file
 experiments=()
 
-while IFS=',' read -r sigma lr model pop_size prompt_bs name || [ -n "$sigma" ]; do
+while IFS=',' read -r sigma lr model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node || [ -n "$sigma" ]; do
     # Skip comments and empty lines
     [[ "$sigma" =~ ^#.*$ ]] && continue
     [[ -z "$sigma" ]] && continue
@@ -99,8 +138,16 @@ while IFS=',' read -r sigma lr model pop_size prompt_bs name || [ -n "$sigma" ];
     pop_size=$(echo "$pop_size" | xargs)
     prompt_bs=$(echo "$prompt_bs" | xargs)
     name=$(echo "$name" | xargs)
+    normalize_with_std=$(echo "$normalize_with_std" | xargs)
+    scale_lr_in_grad=$(echo "$scale_lr_in_grad" | xargs)
+    num_nodes=$(echo "$num_nodes" | xargs)
+    gpus_per_node=$(echo "$gpus_per_node" | xargs)
+
+    # Default to 32 nodes / 4 GPUs if not specified
+    num_nodes=${num_nodes:-32}
+    gpus_per_node=${gpus_per_node:-4}
     
-    experiments+=("$sigma|$lr|$model|$pop_size|$prompt_bs|$name")
+    experiments+=("$sigma|$lr|$model|$pop_size|$prompt_bs|$name|$normalize_with_std|$scale_lr_in_grad|$num_nodes|$gpus_per_node")
 done < "$CONFIG_FILE"
 
 echo "Loaded ${#experiments[@]} experiments from config file"
@@ -117,7 +164,7 @@ previous_job_id=""
 for i in "${!experiments[@]}"; do
     experiment_num=$((i + 1))
     
-    IFS='|' read -r sigma lr model pop_size prompt_bs name <<< "${experiments[$i]}"
+    IFS='|' read -r sigma lr model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node <<< "${experiments[$i]}"
     
     echo "=========================================="
     echo "Experiment $experiment_num/${#experiments[@]}: $name"
@@ -128,38 +175,36 @@ for i in "${!experiments[@]}"; do
     echo "  model_name: $model"
     echo "  population_size: $pop_size"
     echo "  prompt_batch_size: $prompt_bs"
+    echo "  normalize_with_std: $normalize_with_std"
+    echo "  scale_lr_in_grad: $scale_lr_in_grad"
+    echo "  num_nodes: $num_nodes"
+    echo "  gpus_per_node: $gpus_per_node"
+    echo "  cpus_per_task (derived): $((gpus_per_node * 72))"
     echo ""
     
     experiment_script="$EXPERIMENT_DIR/exp_${name}_$(date +%Y%m%d_%H%M%S).sh"
     
-    # UPDATED: Pass prompt_bs to function
-    create_experiment_script "$sigma" "$lr" "$model" "$pop_size" "$prompt_bs" "$name" "$experiment_script"
+    create_experiment_script "$sigma" "$lr" "$model" "$pop_size" "$prompt_bs" "$name" "$normalize_with_std" "$scale_lr_in_grad" "$num_nodes" "$gpus_per_node" "$experiment_script"
     
+    begin_offset=$((i * DELAY_SECONDS))
+
     if [ "$USE_DEPENDENCIES" = true ]; then
-        echo "Submitting with dependency..."
-        job_id=$(submit_job_with_dependency "$experiment_script" "$previous_job_id")
-        
+        echo "Submitting with dependency (starts in ${begin_offset}s)..."
+        job_id=$(submit_job_with_dependency "$experiment_script" "$previous_job_id" "$begin_offset")
+
         if [ -z "$previous_job_id" ]; then
-            echo "✓ Job ID: $job_id (starts immediately)"
+            echo "✓ Job ID: $job_id (starts in ${begin_offset}s)"
         else
-            echo "✓ Job ID: $job_id (starts ${DELAY_MINUTES}min after $previous_job_id)"
+            echo "✓ Job ID: $job_id (starts in ${begin_offset}s, after $previous_job_id)"
         fi
-        
+
         previous_job_id=$job_id
     else
-        echo "Submitting job..."
-        job_id=$(submit_job "$experiment_script")
-        echo "✓ Job ID: $job_id"
-        
-        if [ $experiment_num -lt ${#experiments[@]} ]; then
-            echo "Waiting $DELAY_MINUTES minutes..."
-            for ((min=DELAY_MINUTES; min>0; min--)); do
-                echo "  Time remaining: $min minute(s)..."
-                sleep 60
-            done
-        fi
+        echo "Submitting job (starts in ${begin_offset}s)..."
+        job_id=$(sbatch "--begin=now+${begin_offset}seconds" "$experiment_script" | grep -oP '\d+')
+        echo "✓ Job ID: $job_id (starts in ${begin_offset}s)"
     fi
-    
+
     submitted_jobs+=("$job_id:$name")
     echo ""
 done

@@ -1,20 +1,71 @@
-# Experiment Configuration
-# Format: sigma,learning_rate,model_name,population_size,prompt_batch_size,name_prefix
+# Experiment Template Configuration
+# Format: sigma,learning_rate,model_name,population_size,prompt_batch_size,name_prefix,normalize_with_std,scale_lr_in_grad,num_nodes,gpus_per_node
+# Use [val1|val2|val3] in any field to ablate over those values
+# Use 'auto' for num_nodes/gpus_per_node to compute from model/pop heuristics
 # Lines starting with # are ignored
 
-# Qwen2.5-72B-Instruct Experiments
-0.001,0.001,Qwen/Qwen2.5-72B-Instruct,4096,16,batch-exps
-0.001,0.001,Qwen/Qwen2.5-72B-Instruct,512,16,batch-exps
-0.001,0.001,Qwen/Qwen2.5-72B-Instruct,8192,16,batch-exps
-0.002,0.002,Qwen/Qwen2.5-72B-Instruct,4096,32,batch-exps
+# ============================================================
+# Fixed baseline experiments: 72B and 32B
+# ============================================================
+0.001,0.001,Qwen/Qwen2.5-72B-Instruct,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.001,0.001,Qwen/Qwen3-32B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
 
-# Qwen3-32B Experiments
-0.001,0.001,Qwen/Qwen3-32B,4096,16,batch-exps
-0.001,0.001,Qwen/Qwen3-32B,512,16,batch-exps
-0.001,0.001,Qwen/Qwen3-32B,8192,16,batch-exps
-0.001,0.001,Qwen/Qwen3-32B,16384,16,batch-exps
-0.002,0.002,Qwen/Qwen3-32B,4096,32,batch-exps
-0.002,0.005,Qwen/Qwen3-32B,2048,32,batch-exps
-0.001,0.005,Qwen/Qwen3-32B,2048,32,batch-exps
-0.002,0.005,Qwen/Qwen3-32B,2048,16,batch-exps
-0.001,0.005,Qwen/Qwen3-32B,2048,16,batch-exps
+# ============================================================
+# 4B hyperparameter sweep
+# Ablating: scale_lr_in_grad (2) x sigma (3) x lr (3) x pop (3) = 54 experiments
+# normalize-with-std: fixed ENABLED
+# ============================================================
+0.001,0.0002,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
+0.001,0.0002,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,,1,1
+0.001,0.0002,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.001,0.0002,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,,2,4
+0.001,0.0002,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,4,4
+0.001,0.0002,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,,4,4
+0.001,0.00004,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
+0.001,0.00004,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,,1,1
+0.001,0.00004,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.001,0.00004,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,,2,4
+0.001,0.00004,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,4,4
+0.001,0.00004,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,,4,4
+0.001,0.000016,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
+0.001,0.000016,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,,1,1
+0.001,0.000016,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.001,0.000016,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,,2,4
+0.001,0.000016,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,4,4
+0.001,0.000016,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,,4,4
+0.0002,0.0002,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
+0.0002,0.0002,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,,1,1
+0.0002,0.0002,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.0002,0.0002,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,,2,4
+0.0002,0.0002,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,4,4
+0.0002,0.0002,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,,4,4
+0.0002,0.00004,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
+0.0002,0.00004,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,,1,1
+0.0002,0.00004,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.0002,0.00004,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,,2,4
+0.0002,0.00004,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,4,4
+0.0002,0.00004,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,,4,4
+0.0002,0.000016,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
+0.0002,0.000016,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,,1,1
+0.0002,0.000016,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.0002,0.000016,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,,2,4
+0.0002,0.000016,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,4,4
+0.0002,0.000016,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,,4,4
+0.00008,0.0002,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
+0.00008,0.0002,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,,1,1
+0.00008,0.0002,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.00008,0.0002,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,,2,4
+0.00008,0.0002,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,4,4
+0.00008,0.0002,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,,4,4
+0.00008,0.00004,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
+0.00008,0.00004,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,,1,1
+0.00008,0.00004,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.00008,0.00004,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,,2,4
+0.00008,0.00004,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,4,4
+0.00008,0.00004,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,,4,4
+0.00008,0.000016,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,1,1
+0.00008,0.000016,Qwen/Qwen3-8B,512,16,hyperparam-sweep,normalize-with-std,,1,1
+0.00008,0.000016,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,2,4
+0.00008,0.000016,Qwen/Qwen3-8B,8192,16,hyperparam-sweep,normalize-with-std,,2,4
+0.00008,0.000016,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,4,4
+0.00008,0.000016,Qwen/Qwen3-8B,16384,16,hyperparam-sweep,normalize-with-std,,4,4
