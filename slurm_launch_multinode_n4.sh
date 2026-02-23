@@ -85,7 +85,14 @@ source "$SCRATCH/uv_envs/vllm_env/.venv/bin/activate"
 export WANDB_DIR="$SCRATCH/for_esvllm/wandb"
 
 # --- Force Hugging Face to use offline mode (avoid rate limiting) ---
-# export HF_HUB_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# Redirect all compile caches off home NFS filesystem
+export VLLM_CACHE_ROOT="$SCRATCH/.cache/vllm_${SLURM_JOB_ID}"
+export TRITON_CACHE_DIR="$SCRATCH/.triton_cache_${SLURM_JOB_ID}"
+export TORCHINDUCTOR_CACHE_DIR="$SCRATCH/.inductor_cache_${SLURM_JOB_ID}"
+mkdir -p "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
 
 # --- Change to Working Directory ---
 echo "Changing to working directory..."

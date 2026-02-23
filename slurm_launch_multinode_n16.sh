@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=eggroll_debug_n16_8b
+#SBATCH --job-name=debug_n16
 #SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
@@ -26,14 +26,14 @@ echo "---------------------------------"
 sigma="0.001"
 learning_rate="0.0002"
 max_tokens="4096"
-model_name="Qwen/Qwen3-8B"
+model_name="Qwen/Qwen3-4B"
 population_size="16384"
 steps_per_adapter="4"
 lora_r="1"
 task="math2:deepscaler40k"
 # If you want the flag enabled, set normalize_with_std="normalize-with-std"
 # To disable, set normalize_with_std="" (empty string)
-normalize_with_std=""
+normalize_with_std="normalize-with-std"
 # If you want the flag enabled, set scale_lr_in_grad="scale-lr-in-grad"
 # To disable, set scale_lr_in_grad="no-scale-lr-in-grad" or "" (empty string)
 scale_lr_in_grad=""
@@ -85,7 +85,22 @@ source "$SCRATCH/uv_envs/vllm_env/.venv/bin/activate"
 export WANDB_DIR="$SCRATCH/for_esvllm/wandb"
 
 # --- Force Hugging Face to use offline mode (avoid rate limiting) ---
-# export HF_HUB_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# Redirect all compile caches off home NFS filesystem
+export VLLM_CACHE_ROOT="$SCRATCH/.cache/vllm_${SLURM_JOB_ID}"
+export TRITON_CACHE_DIR="$SCRATCH/.triton_cache_${SLURM_JOB_ID}"
+export TORCHINDUCTOR_CACHE_DIR="$SCRATCH/.inductor_cache_${SLURM_JOB_ID}"
+mkdir -p "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+
+# --- Set up cache cleanup trap (runs on exit, error, or signal) ---
+cleanup_caches() {
+    echo "Cleaning up job-specific caches..."
+    rm -rf "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+    echo "Cache cleanup complete"
+}
+trap cleanup_caches EXIT
 
 # --- Change to Working Directory ---
 echo "Changing to working directory..."

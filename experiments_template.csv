@@ -11,8 +11,8 @@
 0.001,0.001,Qwen/Qwen3-32B,512,16,hyperparam-sweep,normalize-with-std,scale-lr-in-grad,auto,auto
 
 # ============================================================
-# 4B hyperparameter sweep
+# 8B,4B hyperparameter sweep
 # Ablating: scale_lr_in_grad (2) x sigma (3) x lr (3) x pop (3) = 54 experiments
 # normalize-with-std: fixed ENABLED
 # ============================================================
-[0.001|0.0002|0.00008],[0.0002|0.00004|0.000016],Qwen/Qwen3-8B,[512|8192|16384],16,hyperparam-sweep,normalize-with-std,[scale-lr-in-grad|],auto,auto
+[0.001|0.0002|0.00008],[0.0002|0.00004|0.000016],Qwen/Qwen3-4B,[512|8192|16384],16,hyperparam-sweep-4B,normalize-with-std,[scale-lr-in-grad|],auto,auto

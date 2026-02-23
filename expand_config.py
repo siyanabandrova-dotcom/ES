@@ -31,18 +31,17 @@ def parse_field(field):
 
 def auto_nodes_gpus(model, pop):
     pop = int(pop)
-    if "110B" in model:
-        tp = 4
-        loras_per_engine = 128
-    elif "72B" in model:
-        tp = 4
-        loras_per_engine = 256
-    elif "14B" in model:
-        tp = 2
-        loras_per_engine = 512
-    else:
-        tp = 1
-        loras_per_engine = 1024
+    model_lower = model.lower()
+    if "110b" in model_lower:
+        tp, loras_per_engine = 4, 128
+    elif "72b" in model_lower:
+        tp, loras_per_engine = 4, 128   
+    elif "32b" in model_lower:
+        tp, loras_per_engine = 4, 128    
+    elif "14b" in model_lower:
+        tp, loras_per_engine = 2, 256    
+    else:  # 8B, 4B, 1.7B, 0.6B
+        tp, loras_per_engine = 1, 256    
 
     num_engines = max(1, pop // loras_per_engine)
     total_gpus = num_engines * tp

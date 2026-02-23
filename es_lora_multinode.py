@@ -980,11 +980,11 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
             enable_lora=True,
             max_loras=(population_size + num_engines - 1) // num_engines,
             max_lora_rank=max(lora_r, 8),
-            gpu_memory_utilization=0.95,  # conservative to reduce overall memory pressure
+            gpu_memory_utilization=0.90,  # conservative to reduce overall memory pressure
             trust_remote_code=True,
-            max_num_seqs=512,  # allows parallel processing of up to 384 sequences per engine for higher throughput
+            max_num_seqs=512,  # allows parallel processing of up to 512 sequences per engine for higher throughput
             max_model_len=max(1024, 512 + max_tokens),  # dynamic based on generation length
-            max_num_batched_tokens=args.prompt_batch_size * 4096, # controls maximum tokens processed per forward pass; larger batches = better GPU utilization and throughput
+            max_num_batched_tokens=args.prompt_batch_size * 2048, # controls maximum tokens processed per forward pass; larger batches = better GPU utilization and throughput
             enable_chunked_prefill=True,
             load_format="auto",  # let vLLM choose the most efficient loading method
         ) 
