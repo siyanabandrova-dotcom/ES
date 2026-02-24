@@ -8,9 +8,9 @@
 set -e
 
 # --- Configuration ---
-BASE_SCRIPT="slurm_launch_multinode_n16.sh"
-TEMPLATE_FILE="failed_experiments_template.csv" # "experiments_template.csv"  # Set to "" to skip expansion and use CONFIG_FILE directly
-CONFIG_FILE="failed_experiments.csv"
+BASE_SCRIPT="slurm_launch_base.sh"
+TEMPLATE_FILE="experiments_template.csv" # "experiments_template.csv"  # Set to "" to skip expansion and use CONFIG_FILE directly
+CONFIG_FILE="experiments.csv"
 EXPAND_SCRIPT="expand_config.py"
 DELAY_SECONDS=5
 EXPERIMENT_DIR="/scratch/s5j/alv31415.s5j/experiments"

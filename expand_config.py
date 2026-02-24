@@ -33,15 +33,17 @@ def auto_nodes_gpus(model, pop):
     pop = int(pop)
     model_lower = model.lower()
     if "110b" in model_lower:
-        tp, loras_per_engine = 4, 128
+        tp = 4
     elif "72b" in model_lower:
-        tp, loras_per_engine = 4, 128   
+        tp = 4
     elif "32b" in model_lower:
-        tp, loras_per_engine = 4, 128    
+        tp = 4   
     elif "14b" in model_lower:
-        tp, loras_per_engine = 2, 256    
+        tp = 2
     else:  # 8B, 4B, 1.7B, 0.6B
-        tp, loras_per_engine = 1, 256    
+        tp = 1   
+
+    loras_per_engine = 256 * tp
 
     num_engines = max(1, pop // loras_per_engine)
     total_gpus = num_engines * tp
