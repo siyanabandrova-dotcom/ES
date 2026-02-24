@@ -926,6 +926,25 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
         print(f"Launching {num_engines} ESNcclLLM Ray actors (TP={tensor_parallel_size}).")
         print(f"NOTE: Using enforce_eager=True for LoRA + TP compatibility")
 
+        # Compute per-engine LoRA count: how many adapters this engine must serve simultaneously.
+        loras_per_engine = (population_size + num_engines - 1) // num_engines
+
+        concurrent_seqs = loras_per_engine * args.prompt_batch_size
+
+        # Choose vLLM settings based on model size.
+        model_lower = model_name.lower()
+        if "110b" in model_lower:
+            max_num_seqs = min(concurrent_seqs, 512)
+            max_num_batched_tokens = args.batch_size * 2048
+        elif "72b" in model_lower:
+            max_num_seqs = min(concurrent_seqs, 1024)
+            max_num_batched_tokens = args.batch_size * 3072
+        else:
+            max_num_seqs = concurrent_seqs
+            max_num_batched_tokens = args.batch_size * 4096
+
+        gpu_mem_util = 0.9
+
         engines = [
             ray.remote(num_cpus=0, num_gpus=0, scheduling_strategy=strategy)(ESNcclLLM).remote(
                 model=model_name,
@@ -934,17 +953,17 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
                 worker_extension_cls="es_lora_multinode.WorkerExtension",
                 dtype="auto",
                 enable_prefix_caching=True,
-                # enforce_eager=False,
                 enforce_eager=True,  # required for LoRA + TP > 1
                 enable_lora=True,
-                max_loras=(population_size + num_engines - 1) // num_engines,
+                max_loras=loras_per_engine,
                 max_lora_rank=max(lora_r, 8),
-                gpu_memory_utilization=0.90,  # conservative to reduce overall memory pressure
+                gpu_memory_utilization=gpu_mem_util,
                 trust_remote_code=True,
-                max_num_seqs=384,  # allows parallel processing of up to 384 sequences per engine for higher throughput
-                max_model_len=max(1024, 512 + max_tokens),  # dynamic based on generation length
-                max_num_batched_tokens=args.prompt_batch_size * 1024, # controls maximum tokens processed per forward pass; larger batches = better GPU utilization and throughput
-                load_format="auto",  # let vLLM choose the most efficient loading method
+                max_num_seqs=max_num_seqs,
+                max_model_len=max(1024, 512 + max_tokens),
+                max_num_batched_tokens=max_num_batched_tokens,
+                enable_chunked_prefill=True,  
+                load_format="auto",
             )
             for strategy in strategies
         ]
