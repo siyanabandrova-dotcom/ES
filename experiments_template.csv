@@ -16,4 +16,6 @@
 #0.002,0.0002,Qwen/Qwen3-8B,4096,16,hyperparam-sweep-8B,normalize-with-std,scale-lr-in-grad,auto,auto
 #0.002,0.0002,Qwen/Qwen3-8B,2048,16,hyperparam-sweep-8B,normalize-with-std,scale-lr-in-grad,auto,auto
 #0.001,0.001,Qwen/Qwen3-8B,2048,16,hyperparam-sweep-8B,normalize-with-std,scale-lr-in-grad,auto,auto
-0.002,0.0002,Qwen/Qwen3-32B,16384,16,hyperparam-sweep-32B,normalize-with-std,scale-lr-in-grad,auto,auto
+#0.001,0.001,Qwen/Qwen3-32B,2048,16,hyperparam-sweep-32B,normalize-with-std,scale-lr-in-grad,auto,auto
+0.002,0.0002,Qwen/Qwen2.5-72B-Instruct,2048,16,hyperparam-sweep-72B,normalize-with-std,scale-lr-in-grad,auto,auto
+0.002,0.0002,Qwen/Qwen2.5-72B,2048,16,hyperparam-sweep-72B,normalize-with-std,scale-lr-in-grad,auto,auto

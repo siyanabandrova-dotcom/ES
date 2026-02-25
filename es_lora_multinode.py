@@ -934,16 +934,17 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
         # Choose vLLM settings based on model size.
         model_lower = model_name.lower()
         if "110b" in model_lower:
-            max_num_seqs = min(concurrent_seqs, 512)
-            max_num_batched_tokens = args.batch_size * 2048
+            max_num_seqs = 384
+            max_num_batched_tokens = args.prompt_batch_size * 512
+            gpu_mem_util = 0.95
         elif "72b" in model_lower:
-            max_num_seqs = min(concurrent_seqs, 1024)
-            max_num_batched_tokens = args.batch_size * 3072
+            max_num_seqs = 1024
+            max_num_batched_tokens = 16 * 2048
+            gpu_mem_util = 0.95
         else:
-            max_num_seqs = concurrent_seqs
-            max_num_batched_tokens = args.batch_size * 4096
-
-        gpu_mem_util = 0.9
+            max_num_seqs = 512
+            max_num_batched_tokens = 16 * 2048
+            gpu_mem_util = 0.9
 
         engines = [
             ray.remote(num_cpus=0, num_gpus=0, scheduling_strategy=strategy)(ESNcclLLM).remote(
