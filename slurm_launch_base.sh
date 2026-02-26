@@ -1,9 +1,9 @@
 #!/bin/bash
 
-#SBATCH --job-name=72b_throughput
+#SBATCH --job-name=72b_run
 #SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
-#SBATCH --time=00:20:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/72b_throughput-%j.log
 #SBATCH --cpus-per-task=64
 #SBATCH --ntasks-per-node=1

@@ -1,14 +1,12 @@
 #!/bin/bash
 
-#SBATCH --job-name=baseline_qwen4b_eval
+#SBATCH --job-name=baseline_qwen110b_eval
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/baseline_single-%j.log
+#SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/baseline_110b-%j.log
 #SBATCH --cpus-per-task=32
 #SBATCH --ntasks-per-node=1
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=antonio.leonvillares@stx.ox.ac.uk
 
 # --- Create logs directory if it doesn't exist ---
 LOG_DIR="/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/"
@@ -26,7 +24,7 @@ echo "---------------------------------"
 # User-settable parameters (edit these)
 # -----------------------------------------
 max_tokens="4096"
-model_name="Qwen/Qwen3-4B"
+model_name="Qwen/Qwen1.5-110B-Chat"
 task="math2:deepscaler40k"
 prompt_batch_size="16"
 samples_per_prompt="1"

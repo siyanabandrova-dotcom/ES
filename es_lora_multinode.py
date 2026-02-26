@@ -935,12 +935,12 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
         model_lower = model_name.lower()
         if "110b" in model_lower:
             max_num_seqs = 384
-            max_num_batched_tokens = args.prompt_batch_size * 512
-            gpu_mem_util = 0.95
+            max_num_batched_tokens = 16 * 1024
+            gpu_mem_util = 0.9
         elif "72b" in model_lower:
-            max_num_seqs = 1024
-            max_num_batched_tokens = 16 * 2048
-            gpu_mem_util = 0.95
+            max_num_seqs = 384
+            max_num_batched_tokens = 16 * 1024
+            gpu_mem_util = 0.9
         else:
             max_num_seqs = 512
             max_num_batched_tokens = 16 * 2048

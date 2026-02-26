@@ -14,7 +14,7 @@ CONFIG_FILE="experiments.csv"
 EXPAND_SCRIPT="expand_config.py"
 DELAY_SECONDS=5
 EXPERIMENT_DIR="/scratch/s5j/alv31415.s5j/experiments"
-USE_DEPENDENCIES=true  # Set to false to use real-time waiting instead
+USE_DEPENDENCIES=false  # Set to false to use real-time waiting instead
 
 # =============================================================================
 # Template Expansion

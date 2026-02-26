@@ -34,17 +34,19 @@ def auto_nodes_gpus(model, pop):
     model_lower = model.lower()
     if "110b" in model_lower:
         tp = 4
+        loras_per_engine = 64
     elif "72b" in model_lower:
         tp = 4
+        loras_per_engine = 128
     elif "32b" in model_lower:
         tp = 4   
+        loras_per_engine = 256
     elif "14b" in model_lower:
         tp = 2
+        loras_per_engine = 256
     else:  # 8B, 4B, 1.7B, 0.6B
         tp = 1   
-
-    # loras_per_engine controls how many LoRA adapters each engine must manage simultaneously.
-    loras_per_engine = 256
+        loras_per_engine = 256
 
     num_engines = max(1, pop // loras_per_engine)
     total_gpus = num_engines * tp
