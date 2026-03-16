@@ -7,8 +7,6 @@
 #SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/multinode_n8-%j.log
 #SBATCH --cpus-per-task=32
 #SBATCH --ntasks-per-node=1
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=antonio.leonvillares@stx.ox.ac.uk
 
 # --- Create logs directory if it doesn't exist ---
 LOG_DIR="/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/"

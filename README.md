@@ -19,7 +19,8 @@ cd $SCRATCH && mkdir uv_envs && cd uv_envs && mkdir vllm_env
 cd $SCRATCH/uv_envs/vllm_env
 uv venv --seed -p=3.12
 source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate
-srun --gpus 1 uv pip install vllm==0.11.0 --torch-backend=auto --extra-index-url https://wheels.vllm.ai/0.10.2/vllm
+# To support MoE + TP + Multi-LoRA, use vLLM 0.16.0 or later
+srun --gpus 1 uv pip install vllm>=0.16.0 --torch-backend=auto
 uv pip install tyro
 uv pip install wandb
 uv pip install weave
@@ -44,6 +45,8 @@ model, tokenizer = AutoModelForCausalLM.from_pretrained(model_name), AutoTokeniz
 ## Code:
 
 The main script is `es_lora_multinode.py`. This is an almost single file implementation, apart from the tasks which are in `tasks.py`. (`es_lora_multigpu.py` is an old single-node version of the code.)
+
+`es_lora_multinode_moe.py` is the updated version that supports **Mixture-of-Experts (MoE)** models with Tensor Parallelism and Multi-LoRA (requires vLLM >= 0.16.0). It is backward compatible with `es_lora_multinode.py`.
 
 `es_lora_multinode_2.py` is the old version of the code without checkpoint saving [09jan25]
 

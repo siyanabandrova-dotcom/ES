@@ -1,15 +1,15 @@
 #!/bin/bash
 
-#SBATCH --job-name=debug_n1
+#SBATCH --job-name=debug_n1_moe
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/multinode_n4-%j.log
+#SBATCH --output=/scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/multinode_n1-%j.log
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks-per-node=1
 
 # --- Create logs directory if it doesn't exist ---
-LOG_DIR="/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/"
+LOG_DIR="/scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/"
 mkdir -p "$LOG_DIR"
 
 echo "---------------------------------"
@@ -17,7 +17,7 @@ echo "Starting job $SLURM_JOB_ID on $(hostname)"
 echo "Nodes involved: $SLURM_JOB_NODELIST"
 echo "Running on GPU(s): $(nvidia-smi --query-gpu=gpu_name --format=csv,noheader)"
 echo "Number of GPUs per node: $(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
-echo "Log file: $LOG_DIR/multinode_n4-$SLURM_JOB_ID.log"
+echo "Log file: $LOG_DIR/multinode_n1-$SLURM_JOB_ID.log"
 echo "---------------------------------"
 
 # -----------------------------------------
@@ -26,7 +26,7 @@ echo "---------------------------------"
 sigma="0.001"
 learning_rate="0.0002"
 max_tokens="4096"
-model_name="Qwen/Qwen3-4B"
+model_name="Qwen/Qwen1.5-MoE-A2.7B"
 population_size="512"
 steps_per_adapter="4"
 lora_r="1"
@@ -46,7 +46,7 @@ pass_at_k="no-pass-at-k"
 steps_per_eval="10"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="debug-n1"
+name_prefix="debug-n1-moe"
 
 # -----------------------------------------
 
@@ -168,7 +168,7 @@ if [[ -n "$pass_at_k" ]]; then
     PASSATK_FLAG="--${pass_at_k}"
 fi
 
-python es_lora_multinode.py \
+python es_lora_multinode_moe.py \
     --sigma "$sigma" \
     --learning-rate "$learning_rate" \
     --max-tokens "$max_tokens" \
@@ -294,4 +294,4 @@ echo "Shared memory cleanup complete"
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawchick-jsd" "normalize-with-std" "" 1 2048 1.0 "no-pass-at-k" 10 "null" "D3-drawchick-jsd-nopenalty"
 # sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "Qwen/Qwen3-0.6B" 32 4 1 "drawegg-boxed-jsd" "normalize-with-std" "" 1 2048 1.0 "no-pass-at-k" 10 "null" "D3-drawegg-jsd-nopenalty"
 
-# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "/home/s5j/asims.s5j/Documents/esvllm-outer/hyperscale-es-vllm/tmp/merged_model" 32 4 1 "drawegg-boxed-jsd" "normalize-with-std" "" 1 2048 1.0 "no-pass-at-k" 10 "null" "D3-drawegg-jsd-nopenalty"
+# sbatch $HOME/Documents/esvllm-outer/hyperscale-es-vllm/slurm_launch_multinode_n4.sh 0.001 0.001 32 "/home/s5e/asims.s5e/Documents/esvllm-outer/hyperscale-es-vllm/tmp/merged_model" 32 4 1 "drawegg-boxed-jsd" "normalize-with-std" "" 1 2048 1.0 "no-pass-at-k" 10 "null" "D3-drawegg-jsd-nopenalty"
