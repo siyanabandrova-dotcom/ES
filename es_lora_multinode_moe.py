@@ -112,6 +112,7 @@ class Args:
                 "Qwen/Qwen2.5-1.5B": 2, # for debugging tp
                 # MOE MODELS
                 "Qwen/Qwen1.5-MoE-A2.7B": 2,
+                "Qwen/Qwen3-30B-A3B-Thinking-2507": 4
             }
 
             # Check if model_name matches any pattern
@@ -125,7 +126,6 @@ class Args:
 LORA_TARGET_MODULES = [
     "q_proj", "k_proj", "v_proj", "o_proj",
     "gate_proj", "up_proj", "down_proj"]
-]
 
 def map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, device: torch.device):
     # Keep on CPU to avoid OOM - will move to GPU when applying
@@ -318,11 +318,9 @@ class WorkerExtension:
 
         print(f"ES UPDATE: Starting streaming update for {len(peft_shapes_dict)} layers...", flush=True)
 
-        # Iterate through PEFT layers one by one
         for layer_idx, (peft_name, weight_shape) in enumerate(peft_shapes_dict.items()):
             lora_b_shape, lora_a_shape = (weight_shape[0], args.lora_r), (args.lora_r, weight_shape[1])
             
-            # 1. Compute the update for this specific layer (Accumulate on GPU, move to CPU)
             layer_update = torch.zeros(weight_shape, device=self.device, dtype=torch.float32)
 
             for chunk_start in range(0, args.population_size // 2, chunk_size):
@@ -338,7 +336,6 @@ class WorkerExtension:
                     fitness_diff = normalized_fitnesses[pop_idx_1] - normalized_fitnesses[pop_idx_2]
                     fitness_diffs.append(fitness_diff)
 
-                    # Use the pre-calculated global index to keep seeds identical to previous logic
                     global_layer_idx = peft_name_to_idx[peft_name]
                     
                     noise_a, noise_b = get_rng_noise(
@@ -370,7 +367,6 @@ class WorkerExtension:
                 layer_update.add_(weighted_noise)
                 del noise_a_batch, noise_b_batch, weighted_noise
             
-            # 2. Scale gradient
             gradient = (1.0 / (args.population_size * args.sigma + 1e-8)) * layer_update * args.learning_rate
 
             if args.scale_lr_in_grad:
@@ -379,7 +375,6 @@ class WorkerExtension:
             del layer_update # Free the accumulation tensor
 
             # 3. Identify target vLLM parameter and apply immediately
-            # Logic adapted from map_peft_updates_to_vllm to run inline
             vllm_name = peft_name.replace("base_model.model.", "")
             target_param = None
             slice_obj = None
@@ -389,7 +384,6 @@ class WorkerExtension:
                 target_name = vllm_name.replace("self_attn.q_proj", "self_attn.qkv_proj")
                 if target_name in vllm_params:
                     target_param = vllm_params[target_name]
-                    # Start at 0
                     slice_obj = slice(0, weight_shape[0])
                 else:
                     raise RuntimeError(
@@ -400,9 +394,6 @@ class WorkerExtension:
 
             elif "self_attn.k_proj" in vllm_name:
                 target_name = vllm_name.replace("self_attn.k_proj", "self_attn.qkv_proj")
-                # Need to find offset. q_proj is usually same size as k_proj in standard attn,
-                # but GQA might differ. We need to find q_proj size.
-                # Safe way: look up q_proj in peft_shapes_dict
                 q_name = peft_name.replace("k_proj", "q_proj")
                 if target_name in vllm_params and q_name in peft_shapes_dict:
                     target_param = vllm_params[target_name]
@@ -432,10 +423,8 @@ class WorkerExtension:
                     )
 
             elif "self_attn.o_proj" in vllm_name:
-                # Column parallel: slice columns
                 if vllm_name in vllm_params:
                     target_param = vllm_params[vllm_name]
-                    # If TP > 1, the vLLM param is smaller than PEFT param
                     if target_param.shape[1] < weight_shape[1]:
                         slice_obj = (slice(None), slice(0, target_param.shape[1]))
                     else:
@@ -472,7 +461,6 @@ class WorkerExtension:
                     )
 
             elif "mlp.down_proj" in vllm_name:
-                # Column parallel
                 if vllm_name in vllm_params:
                     target_param = vllm_params[vllm_name]
                     if target_param.shape[1] < weight_shape[1]:
@@ -484,54 +472,85 @@ class WorkerExtension:
                         f"apply_lora_es_update: expected param '{vllm_name}' in vllm_params "
                         f"for down_proj layer '{peft_name}', but it was not found."
                     )
-            
-            # --- MoE Experts Mapping ---
+
+            # --- Shared Expert Mapping (dense MLP, always runs) ---
+            elif "shared_expert.gate_proj" in vllm_name:
+                target_name = vllm_name.replace("shared_expert.gate_proj", "shared_expert.gate_up_proj")
+                if target_name in vllm_params:
+                    target_param = vllm_params[target_name]
+                    slice_obj = slice(0, weight_shape[0])
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: expected fused param '{target_name}' in vllm_params "
+                        f"for shared_expert.gate_proj layer '{peft_name}', but it was not found."
+                    )
+
+            elif "shared_expert.up_proj" in vllm_name:
+                target_name = vllm_name.replace("shared_expert.up_proj", "shared_expert.gate_up_proj")
+                gate_name = peft_name.replace("up_proj", "gate_proj")
+                if target_name in vllm_params and gate_name in peft_shapes_dict:
+                    target_param = vllm_params[target_name]
+                    start = peft_shapes_dict[gate_name][0]
+                    slice_obj = slice(start, start + weight_shape[0])
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: could not resolve shared_expert.up_proj offset for '{peft_name}'."
+                    )
+
+            elif "shared_expert.down_proj" in vllm_name:
+                if vllm_name in vllm_params:
+                    target_param = vllm_params[vllm_name]
+                    if target_param.shape[1] < weight_shape[1]:
+                        slice_obj = (slice(None), slice(0, target_param.shape[1]))
+                    else:
+                        slice_obj = (slice(None), slice(None))
+                else:
+                    raise RuntimeError(
+                        f"apply_lora_es_update: expected param '{vllm_name}' in vllm_params "
+                        f"for shared_expert.down_proj layer '{peft_name}', but it was not found."
+                    )
+
+            # --- Routed Experts Mapping (fused into w13_weight / w2_weight) ---
             elif "experts" in vllm_name:
                 import re
-                # PEFT name: ...mlp.experts.0.gate_proj.base_layer.weight
-                # vLLM name: ...mlp.experts.0.gate_proj
-                # vLLM target: ...mlp.experts.gate_up_proj [num_experts, 2*inter, hidden]
-                
-                expert_match = re.search(r"experts\.(\d+)\.", vllm_name)
+                # vLLM fuses per-expert weights so strip .base_layer.weight before lookup
+                vllm_name_moe = vllm_name.replace(".base_layer.weight", "")
+
+                expert_match = re.search(r"experts\.(\d+)\.", vllm_name_moe)
                 if expert_match:
                     expert_idx = int(expert_match.group(1))
-                    
-                    if "gate_proj" in vllm_name:
-                        target_name = re.sub(r"experts\.\d+\.gate_proj", "experts.gate_up_proj", vllm_name)
+
+                    if "gate_proj" in vllm_name_moe:
+                        # gate fused into first half of w13_weight [num_experts, 2*intermediate, hidden]
+                        target_name = re.sub(r"experts\.\d+\.gate_proj", "experts.base_layer.w13_weight", vllm_name_moe)
                         if target_name in vllm_params:
                             target_param = vllm_params[target_name]
-                            # target_param: [experts, 2*inter, hidden]
-                            # weight_shape (PEFT): [inter, hidden]
                             slice_obj = (expert_idx, slice(0, weight_shape[0]), slice(None))
-                        else:
-                            # Not fused?
-                            if vllm_name in vllm_params:
-                                target_param = vllm_params[vllm_name]
-                                slice_obj = (expert_idx, slice(None), slice(None))
-                    
-                    elif "up_proj" in vllm_name:
-                        target_name = re.sub(r"experts\.\d+\.up_proj", "experts.gate_up_proj", vllm_name)
+
+                    elif "up_proj" in vllm_name_moe:
+                        # up fused into second half of w13_weight [num_experts, 2*intermediate, hidden]
+                        target_name = re.sub(r"experts\.\d+\.up_proj", "experts.base_layer.w13_weight", vllm_name_moe)
                         gate_peft_name = peft_name.replace("up_proj", "gate_proj")
                         if target_name in vllm_params and gate_peft_name in peft_shapes_dict:
                             target_param = vllm_params[target_name]
                             start = peft_shapes_dict[gate_peft_name][0]
                             slice_obj = (expert_idx, slice(start, start + weight_shape[0]), slice(None))
-                        elif vllm_name in vllm_params:
-                            target_param = vllm_params[vllm_name]
-                            slice_obj = (expert_idx, slice(None), slice(None))
 
-                    elif "down_proj" in vllm_name:
-                        target_name = re.sub(r"experts\.\d+\.down_proj", "experts.down_proj", vllm_name)
+                    elif "down_proj" in vllm_name_moe:
+                        # down stored as w2_weight [num_experts, hidden, intermediate]
+                        target_name = re.sub(r"experts\.\d+\.down_proj", "experts.base_layer.w2_weight", vllm_name_moe)
                         if target_name in vllm_params:
                             target_param = vllm_params[target_name]
-                            # target_param: [experts, hidden, inter]
-                            slice_obj = (expert_idx, slice(None), slice(None))
-                        elif vllm_name in vllm_params:
-                            target_param = vllm_params[vllm_name]
                             slice_obj = (expert_idx, slice(None), slice(None))
 
                 if target_param is None:
-                    raise RuntimeError(f"MoE Mapping failed for {peft_name} (vllm_name: {vllm_name})")
+                    moe_keys = [k for k in vllm_params if "experts" in k and "layers.0" in k]
+                    raise RuntimeError(
+                        f"MoE Mapping failed for {peft_name}\n"
+                        f"vllm_name_moe: {vllm_name_moe}\n"
+                        f"target_name tried: {target_name}\n"
+                        f"Actual vllm MoE keys (layer 0): {moe_keys}"
+                    )
 
             else:
                 raise RuntimeError(
@@ -541,55 +560,58 @@ class WorkerExtension:
 
             # --- Apply Update ---
             if target_param is not None:
-                # Cast gradient to model dtype (float16/bfloat16)
                 grad_shard = gradient.to(dtype=target_param.dtype)
                 
                 try:
-                    if isinstance(slice_obj, tuple): # Column parallel or Expert special case
-                        
-                        if len(slice_obj) == 3: # Expert case: (expert_idx, slice_inter, slice_hidden)
-                            exp_idx, s1, s2 = slice_obj
-                            
-                            # Handle expert sharding (EP) - check if this expert is on this rank
-                            if exp_idx < target_param.shape[0]:
-                                # Check if it's sharded along the second dimension (TP)
-                                if isinstance(s1, slice) and s1.stop is not None and s1.stop > target_param.shape[1]:
-                                    # Sharded (TP)
-                                    s1 = slice(s1.start, min(s1.stop, target_param.shape[1]))
-                                    grad_shard = grad_shard[:target_param.shape[1]]
-                                
-                                target_param.data[exp_idx, s1, s2].add_(grad_shard)
-                        
-                        else: # Column parallel case (o_proj, down_proj)
-                            if target_param.shape[1] < grad_shard.shape[1]:
-                                 grad_shard = grad_shard[:, :target_param.shape[1]]
-                            
-                            target_param.data.add_(grad_shard)
-                        
-                    elif isinstance(slice_obj, slice): # Row parallel (qkv, gate_up)
-                        
-                        # Safe Application:
+                    if isinstance(slice_obj, tuple) and len(slice_obj) == 3:
+                        # Routed expert case: (expert_idx, slice_dim1, slice_dim2)
+                        # w13_weight is sharded along dim 1 (TP), w2_weight along dim 2 (TP)
+                        exp_idx, s1, s2 = slice_obj
+                        if exp_idx < target_param.shape[0]:
+                            local_d1 = target_param.shape[1]
+                            s1_start = s1.start if (isinstance(s1, slice) and s1.start is not None) else 0
+                            s1_stop  = s1.stop  if (isinstance(s1, slice) and s1.stop  is not None) else local_d1
+                            s1_start = min(s1_start, local_d1)
+                            s1_stop  = min(s1_stop,  local_d1)
+
+                            if s1_start >= s1_stop:
+                                # update falls outside this TP rank's shard (e.g. up_proj on rank 0) — skip
+                                if es_step == 0 and layer_idx < 2:
+                                    print(f"TP SKIP: {vllm_name} expert {exp_idx} — slice [{s1_start}:{s1_stop}] outside local dim-1 size {local_d1}", flush=True)
+                            else:
+                                g = grad_shard[:s1_stop - s1_start]
+                                # clamp dim 2 for w2_weight TP sharding
+                                local_d2 = target_param.shape[2]
+                                if g.shape[1] > local_d2:
+                                    if es_step == 0 and layer_idx < 2:
+                                        print(f"TP CLAMP: {vllm_name} expert {exp_idx} — clamping grad dim-2 from {g.shape[1]} to {local_d2}", flush=True)
+                                    g = g[:, :local_d2]
+                                target_param.data[exp_idx, s1_start:s1_stop, :g.shape[1]].add_(g)
+
+                    elif isinstance(slice_obj, tuple) and len(slice_obj) == 2:
+                        # Column parallel case (o_proj, down_proj, shared_expert.down_proj)
+                        if target_param.shape[1] < grad_shard.shape[1]:
+                            grad_shard = grad_shard[:, :target_param.shape[1]]
+                        target_param.data.add_(grad_shard)
+
+                    elif isinstance(slice_obj, slice):
+                        # Row parallel case (qkv, gate_up, shared_expert gate_up)
                         param_size = target_param.shape[0]
                         start = slice_obj.start
                         end = min(slice_obj.stop, param_size)
-                        
                         if start < param_size:
-                            valid_grad = grad_shard[:(end-start)]
+                            valid_grad = grad_shard[:(end - start)]
                             target_param.data[start:end].add_(valid_grad)
 
                     else:
-                        # slice_obj must always be a slice or tuple by this point;
-                        # reaching here means the mapping logic above has a bug.
                         raise AssertionError(
                             f"apply_lora_es_update: slice_obj is {slice_obj!r} (type {type(slice_obj)}) "
-                            f"for layer '{vllm_name}'. This should be unreachable — "
-                            f"the mapping logic must have set target_param without setting slice_obj."
+                            f"for layer '{vllm_name}'. This should be unreachable."
                         )
 
                 except Exception as e:
                     print(f"ERROR updating {vllm_name}: {e}. Shapes: Param {target_param.shape}, Grad {grad_shard.shape}", flush=True)
             
-            # 4. Clean up immediately
             del gradient
             del grad_shard
             if chunk_start % (chunk_size * 4) == 0:
@@ -679,6 +701,10 @@ class ESNcclLLM(LLM):
     def __init__(self, *args, **kwargs):
         os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+        
+        # prevent fused MoE kernels from chunking
+        os.environ.setdefault("VLLM_FUSED_MOE_CHUNK_SIZE", str(32**2048))
+
         super().__init__(*args, **kwargs)
         
         # Placeholders for LoRA generation data
@@ -1047,10 +1073,10 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
 
         # Choose vLLM settings based on model size.
         model_lower = model_name.lower()
-        is_moe = "moe" in model_lower
+        is_moe = "moe" in model_lower or "2507" in model_lower
         if is_moe:
-            max_num_seqs = 384
-            max_num_batched_tokens = 16 * 1024
+            max_num_seqs = 512
+            max_num_batched_tokens = 16 * 2048
             gpu_mem_util = 0.9
         elif "110b" in model_lower:
             max_num_seqs = 384

@@ -23,10 +23,10 @@ echo "---------------------------------"
 # -----------------------------------------
 # User-settable parameters (edit these)
 # -----------------------------------------
-sigma="0.001"
+sigma="0.002"
 learning_rate="0.0002"
 max_tokens="4096"
-model_name="Qwen/Qwen1.5-MoE-A2.7B"
+model_name="Qwen/Qwen3-30B-A3B-Thinking-2507"
 population_size="512"
 steps_per_adapter="4"
 lora_r="1"
@@ -46,7 +46,7 @@ pass_at_k="no-pass-at-k"
 steps_per_eval="10"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="debug-n1-moe-high-batched-tokens"
+name_prefix="moe-test-run"
 
 # -----------------------------------------
 
