@@ -23,7 +23,7 @@ import torch
 from accelerate import init_empty_weights
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from vllm import LLM, SamplingParams
-from vllm.utils import get_ip, get_open_port
+from vllm.utils.network_utils import get_ip, get_open_port
 import tyro
 import wandb
 import weave
@@ -124,8 +124,7 @@ class Args:
 
 LORA_TARGET_MODULES = [
     "q_proj", "k_proj", "v_proj", "o_proj",
-    "gate_proj", "up_proj", "down_proj",
-    "experts.gate_proj", "experts.up_proj", "experts.down_proj"
+    "gate_proj", "up_proj", "down_proj"]
 ]
 
 def map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, device: torch.device):
@@ -999,7 +998,7 @@ class ESNcclLLM(LLM):
 
         return fitness_list, info, responses_for_logging
 
-def launch_engines(num_engines, model_name, population_size, lora_r, tensor_parallel_size=1, max_tokens=1024):
+def launch_engines(num_engines, model_name, population_size, lora_r, tensor_parallel_size=1, max_tokens=1024, prompt_batch_size=2):
     """Launches multiple vLLM engines via Ray Placement Groups.
 
     Args:
@@ -1044,11 +1043,16 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
         # Compute per-engine LoRA count: how many adapters this engine must serve simultaneously.
         loras_per_engine = (population_size + num_engines - 1) // num_engines
 
-        concurrent_seqs = loras_per_engine * args.prompt_batch_size
+        concurrent_seqs = loras_per_engine * prompt_batch_size
 
         # Choose vLLM settings based on model size.
         model_lower = model_name.lower()
-        if "110b" in model_lower:
+        is_moe = "moe" in model_lower
+        if is_moe:
+            max_num_seqs = 384
+            max_num_batched_tokens = 16 * 1024
+            gpu_mem_util = 0.9
+        elif "110b" in model_lower:
             max_num_seqs = 384
             max_num_batched_tokens = 16 * 1024
             gpu_mem_util = 0.9
@@ -1066,7 +1070,7 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
                 model=model_name,
                 tensor_parallel_size=tensor_parallel_size,
                 distributed_executor_backend="ray",
-                worker_extension_cls="es_lora_multinode.WorkerExtension",
+                worker_extension_cls="es_lora_multinode_moe.WorkerExtension",
                 dtype="auto",
                 enable_prefix_caching=True,
                 enforce_eager=True,  # required for LoRA + TP > 1
@@ -1108,7 +1112,7 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
             model=model_name,
             tensor_parallel_size=tensor_parallel_size,
             distributed_executor_backend="ray",
-            worker_extension_cls="es_lora_multinode.WorkerExtension",
+            worker_extension_cls="es_lora_multinode_moe.WorkerExtension",
             dtype="auto",
             enable_prefix_caching=True,
             enforce_eager=False, 
@@ -1119,7 +1123,7 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
             trust_remote_code=True,
             max_num_seqs=512,  # allows parallel processing of up to 512 sequences per engine for higher throughput
             max_model_len=max(1024, 512 + max_tokens),  # dynamic based on generation length
-            max_num_batched_tokens=args.prompt_batch_size * 2048, # controls maximum tokens processed per forward pass; larger batches = better GPU utilization and throughput
+            max_num_batched_tokens=prompt_batch_size * 2048, # controls maximum tokens processed per forward pass; larger batches = better GPU utilization and throughput
             enable_chunked_prefill=True,
             load_format="auto",  # let vLLM choose the most efficient loading method
         ) 
@@ -1484,7 +1488,8 @@ def main(args: Args):
     print(f"MAIN: Launching {args.num_engines} vLLM engines...", flush=True)
     sys.stdout.flush()
     engines, pgs = launch_engines(
-        args.num_engines, args.model_name, args.population_size, args.lora_r, args.tensor_parallel_size, args.max_tokens
+        args.num_engines, args.model_name, args.population_size, args.lora_r, args.tensor_parallel_size, args.max_tokens,
+        args.prompt_batch_size
     )
     print("Engines launched successfully.", flush=True)
     sys.stdout.flush()

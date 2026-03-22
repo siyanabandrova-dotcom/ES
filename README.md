@@ -20,7 +20,7 @@ cd $SCRATCH/uv_envs/vllm_env
 uv venv --seed -p=3.12
 source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate
 # To support MoE + TP + Multi-LoRA, use vLLM 0.16.0 or later
-srun --gpus 1 uv pip install vllm>=0.16.0 --torch-backend=auto
+srun --gpus 1 uv pip install vllm==0.17.0 --torch-backend=auto
 uv pip install tyro
 uv pip install wandb
 uv pip install weave

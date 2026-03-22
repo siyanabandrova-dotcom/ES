@@ -2,7 +2,7 @@
 
 #SBATCH --job-name=debug_n1_moe
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
 #SBATCH --output=/scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/multinode_n1-%j.log
 #SBATCH --cpus-per-task=16
@@ -46,7 +46,7 @@ pass_at_k="no-pass-at-k"
 steps_per_eval="10"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="debug-n1-moe"
+name_prefix="debug-n1-moe-high-batched-tokens"
 
 # -----------------------------------------
 
