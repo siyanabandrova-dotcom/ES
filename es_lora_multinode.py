@@ -23,7 +23,7 @@ import torch
 from accelerate import init_empty_weights
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from vllm import LLM, SamplingParams
-from vllm.utils import get_ip, get_open_port
+from vllm.utils.network_utils import get_ip, get_open_port
 import tyro
 import wandb
 import weave
