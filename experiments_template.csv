@@ -4,4 +4,12 @@
 # Use 'auto' for num_nodes/gpus_per_node to compute from model/pop heuristics
 # Lines starting with # are ignored
 
-[0.001|0.002|0.0002],[0.001|0.0002|0.00004],Qwen/Qwen3-8B,[512|16384],16,hyperparam-sweep-8B,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+# ORZ experiments, original EGGROLL hparams 
+0.001,0.001,Qwen/Qwen3-4B,256,16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+
+# ORZ experiments, new EGGROLL hparams based on deepscaler runs 
+0.001,0.0002,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+0.001,0.000016,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+
+# deepscaler experiments, based on deepscaler runs
+0.001,0.0002,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-deepscaler,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k

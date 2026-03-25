@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#SBATCH --job-name=72b_run
+#SBATCH --job-name=rebuttal_4b
 #SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/72b_throughput-%j.log
+#SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/rebuttal_4b-%j.log
 #SBATCH --cpus-per-task=64
 #SBATCH --ntasks-per-node=1
 

@@ -13,7 +13,7 @@ TEMPLATE_FILE="experiments_template.csv" # "experiments_template.csv"  # Set to 
 CONFIG_FILE="experiments.csv"
 EXPAND_SCRIPT="expand_config.py"
 DELAY_SECONDS=5
-EXPERIMENT_DIR="/scratch/s5j/alv31415.s5j/experiments"
+EXPERIMENT_DIR="/scratch/s5e/alv31415.s5e/experiments"
 USE_DEPENDENCIES=false  # Set to false to use real-time waiting instead
 
 # =============================================================================
@@ -227,7 +227,7 @@ echo ""
 echo "Useful Commands:"
 echo "  Monitor all jobs: squeue -u \$USER"
 echo "  Check job details: scontrol show job <JOB_ID>"
-echo "  View job logs: tail -f /scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/multinode_n32-<JOB_ID>.log"
+echo "  View job logs: tail -f /scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/multinode_n32-<JOB_ID>.log"
 echo ""
 
 # Create cancel script
