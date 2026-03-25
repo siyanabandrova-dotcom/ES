@@ -50,7 +50,8 @@ create_experiment_script() {
     local scale_lr_in_grad=$8
     local num_nodes=$9
     local gpus_per_node=${10}
-    local output_script=${11}
+    local task=${11}
+    local output_script=${12}
     
     cp "$BASE_SCRIPT" "$output_script"
     
@@ -71,6 +72,7 @@ create_experiment_script() {
     sed -i "s|^name_prefix=.*|name_prefix=\"$name\"|" "$output_script"
     sed -i "s|^normalize_with_std=.*|normalize_with_std=\"$normalize_with_std\"|" "$output_script"
     sed -i "s|^scale_lr_in_grad=.*|scale_lr_in_grad=\"$scale_lr_in_grad\"|" "$output_script"
+    sed -i "s|^task=.*|task=\"$task\"|" "$output_script"
     
     chmod +x "$output_script"
 }
@@ -126,7 +128,7 @@ fi
 # Read experiments from config file
 experiments=()
 
-while IFS=',' read -r sigma lr model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node || [ -n "$sigma" ]; do
+while IFS=',' read -r sigma lr model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node task || [ -n "$sigma" ]; do
     # Skip comments and empty lines
     [[ "$sigma" =~ ^#.*$ ]] && continue
     [[ -z "$sigma" ]] && continue
@@ -142,12 +144,13 @@ while IFS=',' read -r sigma lr model pop_size prompt_bs name normalize_with_std 
     scale_lr_in_grad=$(echo "$scale_lr_in_grad" | xargs)
     num_nodes=$(echo "$num_nodes" | xargs)
     gpus_per_node=$(echo "$gpus_per_node" | xargs)
+    task=$(echo "$task" | xargs)
 
     # Default to 32 nodes / 4 GPUs if not specified
     num_nodes=${num_nodes:-32}
     gpus_per_node=${gpus_per_node:-4}
     
-    experiments+=("$sigma|$lr|$model|$pop_size|$prompt_bs|$name|$normalize_with_std|$scale_lr_in_grad|$num_nodes|$gpus_per_node")
+    experiments+=("$sigma|$lr|$model|$pop_size|$prompt_bs|$name|$normalize_with_std|$scale_lr_in_grad|$num_nodes|$gpus_per_node|$task")
 done < "$CONFIG_FILE"
 
 echo "Loaded ${#experiments[@]} experiments from config file"
@@ -164,7 +167,7 @@ previous_job_id=""
 for i in "${!experiments[@]}"; do
     experiment_num=$((i + 1))
     
-    IFS='|' read -r sigma lr model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node <<< "${experiments[$i]}"
+    IFS='|' read -r sigma lr model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node task <<< "${experiments[$i]}"
     
     echo "=========================================="
     echo "Experiment $experiment_num/${#experiments[@]}: $name"
@@ -180,11 +183,12 @@ for i in "${!experiments[@]}"; do
     echo "  num_nodes: $num_nodes"
     echo "  gpus_per_node: $gpus_per_node"
     echo "  cpus_per_task (derived): $((gpus_per_node * 72))"
+    echo "  task: $task"
     echo ""
     
     experiment_script="$EXPERIMENT_DIR/exp_${name}_$(date +%Y%m%d_%H%M%S).sh"
     
-    create_experiment_script "$sigma" "$lr" "$model" "$pop_size" "$prompt_bs" "$name" "$normalize_with_std" "$scale_lr_in_grad" "$num_nodes" "$gpus_per_node" "$experiment_script"
+    create_experiment_script "$sigma" "$lr" "$model" "$pop_size" "$prompt_bs" "$name" "$normalize_with_std" "$scale_lr_in_grad" "$num_nodes" "$gpus_per_node" "$task" "$experiment_script"
     
     begin_offset=$((i * DELAY_SECONDS))
 

@@ -20,7 +20,7 @@ from itertools import product as iproduct
 
 COLS = ["sigma", "learning_rate", "model_name", "population_size",
         "prompt_batch_size", "name_prefix", "normalize_with_std",
-        "scale_lr_in_grad", "num_nodes", "gpus_per_node"]
+        "scale_lr_in_grad", "num_nodes", "gpus_per_node", "task"]
 
 def parse_field(field):
     field = field.strip()
