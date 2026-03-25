@@ -112,11 +112,12 @@ class Args:
                 "Qwen/Qwen2.5-1.5B": 2, # for debugging tp
                 # MOE MODELS
                 "Qwen/Qwen1.5-MoE-A2.7B": 2,
-                "Qwen/Qwen3-30B-A3B-Thinking-2507": 4
+                "Qwen/Qwen3-30B-A3B-Thinking-2507": 4,
+                "openai/gpt-oss-20b": 4
             }
 
             # Check if model_name matches any pattern
-            for model_pattern, tp_size in TP_CONFIG.items():
+            for model_pattern, tp_size in sorted(TP_CONFIG.items(), key=lambda x: len(x[0]), reverse=True):
                 if model_pattern in self.model_name:
                     self.tensor_parallel_size = tp_size
                     print(f"Auto-configured tensor_parallel_size={tp_size} for model {self.model_name}", flush=True)
@@ -703,7 +704,10 @@ class ESNcclLLM(LLM):
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         
         # prevent fused MoE kernels from chunking
-        os.environ.setdefault("VLLM_FUSED_MOE_CHUNK_SIZE", str(32**2048))
+        os.environ.setdefault("VLLM_FUSED_MOE_CHUNK_SIZE", str(16*2048))
+
+        os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
         super().__init__(*args, **kwargs)
         
@@ -1073,10 +1077,10 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
 
         # Choose vLLM settings based on model size.
         model_lower = model_name.lower()
-        is_moe = "moe" in model_lower or "2507" in model_lower
+        is_moe = "moe" in model_lower or "2507" in model_lower or "oss" in model_lower
         if is_moe:
-            max_num_seqs = 512
-            max_num_batched_tokens = 16 * 2048
+            max_num_seqs = 128
+            max_num_batched_tokens = 2048#16 * 512
             gpu_mem_util = 0.9
         elif "110b" in model_lower:
             max_num_seqs = 384
@@ -1102,7 +1106,7 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
                 enforce_eager=True,  # required for LoRA + TP > 1
                 enable_lora=True,
                 max_loras=loras_per_engine,
-                max_lora_rank=max(lora_r, 8),
+                max_lora_rank=max(8, lora_r),
                 gpu_memory_utilization=gpu_mem_util,
                 trust_remote_code=True,
                 max_num_seqs=max_num_seqs,

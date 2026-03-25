@@ -27,7 +27,7 @@ sigma="0.002"
 learning_rate="0.0002"
 max_tokens="4096"
 model_name="Qwen/Qwen3-30B-A3B-Thinking-2507"
-population_size="512"
+population_size="256"
 steps_per_adapter="4"
 lora_r="1"
 task="math2:deepscaler40k"
@@ -46,7 +46,7 @@ pass_at_k="no-pass-at-k"
 steps_per_eval="10"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="moe-test-run"
+name_prefix="debug-moe-oom-30b-lorar"
 
 # -----------------------------------------
 
