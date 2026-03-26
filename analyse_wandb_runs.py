@@ -134,7 +134,7 @@ def main():
                         help="Metrics to analyse. Auto-discovered if not provided.")
     parser.add_argument("--top-n", type=int, default=3,
                         help="How many top runs to report per step (default: 3)")
-    parser.add_argument("--output", default="top_runs_per_metric.csv",
+    parser.add_argument("--output", default="current_run_deepscaler.csv",
                         help="Output CSV path (default: top_runs_per_metric.csv)")
     args = parser.parse_args()
 

@@ -9,7 +9,7 @@ set -e
 
 # --- Configuration ---
 BASE_SCRIPT="slurm_launch_base.sh"
-TEMPLATE_FILE="experiments_template.csv" # "experiments_template.csv"  # Set to "" to skip expansion and use CONFIG_FILE directly
+TEMPLATE_FILE="experiments_template.csv" # Set to "" to skip expansion and use CONFIG_FILE directly
 CONFIG_FILE="experiments.csv"
 EXPAND_SCRIPT="expand_config.py"
 DELAY_SECONDS=5
@@ -42,16 +42,17 @@ fi
 create_experiment_script() {
     local sigma=$1
     local lr=$2
-    local model=$3
-    local pop_size=$4
-    local prompt_bs=$5
-    local name=$6
-    local normalize_with_std=$7
-    local scale_lr_in_grad=$8
-    local num_nodes=$9
-    local gpus_per_node=${10}
-    local task=${11}
-    local output_script=${12}
+    local max_tokens=$3
+    local model=$4
+    local pop_size=$5
+    local prompt_bs=$6
+    local name=$7
+    local normalize_with_std=$8
+    local scale_lr_in_grad=$9
+    local num_nodes=${10}
+    local gpus_per_node=${11}
+    local task=${12}
+    local output_script=${13}
     
     cp "$BASE_SCRIPT" "$output_script"
     
@@ -66,6 +67,7 @@ create_experiment_script() {
     sed -i "s|^gpus_per_node=.*|gpus_per_node=\"$gpus_per_node\"|" "$output_script"
     sed -i "s|^sigma=.*|sigma=\"$sigma\"|" "$output_script"
     sed -i "s|^learning_rate=.*|learning_rate=\"$lr\"|" "$output_script"
+    sed -i "s|^max_tokens=.*|max_tokens=\"$max_tokens\"|" "$output_script"
     sed -i "s|^model_name=.*|model_name=\"$model\"|" "$output_script"
     sed -i "s|^population_size=.*|population_size=\"$pop_size\"|" "$output_script"
     sed -i "s|^prompt_batch_size=.*|prompt_batch_size=\"$prompt_bs\"|" "$output_script"
@@ -128,7 +130,7 @@ fi
 # Read experiments from config file
 experiments=()
 
-while IFS=',' read -r sigma lr model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node task || [ -n "$sigma" ]; do
+while IFS=',' read -r sigma lr max_tokens model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node task || [ -n "$sigma" ]; do
     # Skip comments and empty lines
     [[ "$sigma" =~ ^#.*$ ]] && continue
     [[ -z "$sigma" ]] && continue
@@ -136,6 +138,7 @@ while IFS=',' read -r sigma lr model pop_size prompt_bs name normalize_with_std 
     # Trim whitespace
     sigma=$(echo "$sigma" | xargs)
     lr=$(echo "$lr" | xargs)
+    max_tokens=$(echo "$max_tokens" | xargs)
     model=$(echo "$model" | xargs)
     pop_size=$(echo "$pop_size" | xargs)
     prompt_bs=$(echo "$prompt_bs" | xargs)
@@ -150,7 +153,7 @@ while IFS=',' read -r sigma lr model pop_size prompt_bs name normalize_with_std 
     num_nodes=${num_nodes:-32}
     gpus_per_node=${gpus_per_node:-4}
     
-    experiments+=("$sigma|$lr|$model|$pop_size|$prompt_bs|$name|$normalize_with_std|$scale_lr_in_grad|$num_nodes|$gpus_per_node|$task")
+    experiments+=("$sigma|$lr|$max_tokens|$model|$pop_size|$prompt_bs|$name|$normalize_with_std|$scale_lr_in_grad|$num_nodes|$gpus_per_node|$task")
 done < "$CONFIG_FILE"
 
 echo "Loaded ${#experiments[@]} experiments from config file"
@@ -167,7 +170,7 @@ previous_job_id=""
 for i in "${!experiments[@]}"; do
     experiment_num=$((i + 1))
     
-    IFS='|' read -r sigma lr model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node task <<< "${experiments[$i]}"
+    IFS='|' read -r sigma lr max_tokens model pop_size prompt_bs name normalize_with_std scale_lr_in_grad num_nodes gpus_per_node task <<< "${experiments[$i]}"
     
     echo "=========================================="
     echo "Experiment $experiment_num/${#experiments[@]}: $name"
@@ -175,6 +178,7 @@ for i in "${!experiments[@]}"; do
     echo "Parameters:"
     echo "  sigma: $sigma"
     echo "  learning_rate: $lr"
+    echo "  max_tokens: $max_tokens"
     echo "  model_name: $model"
     echo "  population_size: $pop_size"
     echo "  prompt_batch_size: $prompt_bs"
@@ -186,9 +190,9 @@ for i in "${!experiments[@]}"; do
     echo "  task: $task"
     echo ""
     
-    experiment_script="$EXPERIMENT_DIR/exp_${name}_$(date +%Y%m%d_%H%M%S).sh"
+    experiment_script="$EXPERIMENT_DIR/exp_${name}_$(date +%Y%m%d_%H%M%S)_$i.sh"
     
-    create_experiment_script "$sigma" "$lr" "$model" "$pop_size" "$prompt_bs" "$name" "$normalize_with_std" "$scale_lr_in_grad" "$num_nodes" "$gpus_per_node" "$task" "$experiment_script"
+    create_experiment_script "$sigma" "$lr" "$max_tokens" "$model" "$pop_size" "$prompt_bs" "$name" "$normalize_with_std" "$scale_lr_in_grad" "$num_nodes" "$gpus_per_node" "$task" "$experiment_script"
     
     begin_offset=$((i * DELAY_SECONDS))
 
@@ -227,7 +231,7 @@ echo ""
 echo "Useful Commands:"
 echo "  Monitor all jobs: squeue -u \$USER"
 echo "  Check job details: scontrol show job <JOB_ID>"
-echo "  View job logs: tail -f /scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/multinode_n32-<JOB_ID>.log"
+echo "  View job logs: tail -f /scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/multinode_n16-<JOB_ID>.log"
 echo ""
 
 # Create cancel script

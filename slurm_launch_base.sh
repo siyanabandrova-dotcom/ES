@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#SBATCH --job-name=rebuttal_4b
+#SBATCH --job-name=rebuttal_4b_grpocomp
 #SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/rebuttal_4b-%j.log
+#SBATCH --output=/scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/rebuttal_4b_grpocomp-%j.log
 #SBATCH --cpus-per-task=64
 #SBATCH --ntasks-per-node=1
 

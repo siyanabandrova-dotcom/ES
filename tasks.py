@@ -170,6 +170,9 @@ class MathTask2:
                 asdiv_subset = load_dataset("axon-rl/ASDIV-2k", split="train").shuffle(seed=seed).select(range(500))
                 self.dataset['asdiv'] = asdiv_subset
                 self.split_names.append('asdiv')
+                aime25_set = load_dataset("math-ai/aime25", split="test").shuffle(seed=seed)
+                self.dataset['aime25'] = aime25_set
+                self.split_names.append('aime25')
             for split in self.split_names:
                 self.dataset[split] = self.dataset[split].shuffle(seed=seed)
         self.apply_chat_template = apply_chat_template

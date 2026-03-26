@@ -1,16 +1,6 @@
 #!/usr/bin/env python3
 """
 Expands a template experiments config CSV into a flat config ready for slurm_launch_from_config.sh.
-
-Template syntax:
-  - Use [val1|val2|val3] in any field to ablate over those values
-  - Use 'auto' in num_nodes or gpus_per_node to auto-compute from model/pop heuristics
-  - Lines starting with # are preserved as comments
-  - Empty lines are preserved
-
-Usage:
-  python3 expand_config.py experiments_template.csv > experiments_config.csv
-  python3 expand_config.py experiments_template.csv  # writes experiments_config.csv in-place
 """
 
 import re
@@ -18,7 +8,8 @@ import sys
 import math
 from itertools import product as iproduct
 
-COLS = ["sigma", "learning_rate", "model_name", "population_size",
+# Added max_tokens at index 2
+COLS = ["sigma", "learning_rate", "max_tokens", "model_name", "population_size",
         "prompt_batch_size", "name_prefix", "normalize_with_std",
         "scale_lr_in_grad", "num_nodes", "gpus_per_node", "task"]
 
@@ -44,7 +35,7 @@ def auto_nodes_gpus(model, pop):
     elif "14b" in model_lower:
         tp = 2
         loras_per_engine = 256
-    else:  # 8B, 4B, 1.7B, 0.6B
+    else:
         tp = 1   
         loras_per_engine = 256
 
@@ -69,13 +60,13 @@ def expand_line(line):
     rows = []
     for combo in iproduct(*options):
         combo = list(combo)
-        # Resolve 'auto' for num_nodes and gpus_per_node
-        if combo[8] == 'auto' or combo[9] == 'auto':
-            nodes, gpus = auto_nodes_gpus(combo[2], combo[3])
-            if combo[8] == 'auto':
-                combo[8] = nodes
+        # Resolved indices: model=3, pop=4, num_nodes=9, gpus_per_node=10
+        if combo[9] == 'auto' or combo[10] == 'auto':
+            nodes, gpus = auto_nodes_gpus(combo[3], combo[4])
             if combo[9] == 'auto':
-                combo[9] = gpus
+                combo[9] = nodes
+            if combo[10] == 'auto':
+                combo[10] = gpus
         rows.append(','.join(combo))
     return rows
 
@@ -100,16 +91,11 @@ def expand_file(input_path, output_path):
     with open(output_path, 'w') as f:
         f.write(result)
 
-    print(f"Expanded {input_path} → {output_path} ({total_expanded} rows generated from templates)", file=sys.stderr)
+    print(f"Expanded {input_path} → {output_path} ({total_expanded} rows generated)", file=sys.stderr)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print("Usage: python3 expand_config.py <template.csv> [output.csv]", file=sys.stderr)
         sys.exit(1)
-
     input_path = sys.argv[1]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else input_path.replace('_template', '_config').replace('template_', 'config_')
-    if output_path == input_path:
-        output_path = input_path.rsplit('.', 1)[0] + '_expanded.csv'
-
+    output_path = sys.argv[2] if len(sys.argv) > 2 else input_path.replace('_template', '_config')
     expand_file(input_path, output_path)
