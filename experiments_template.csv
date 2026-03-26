@@ -5,11 +5,21 @@
 # Lines starting with # are ignored
 
 # ORZ experiments, original EGGROLL hparams 
-0.001,0.001,Qwen/Qwen3-4B,256,16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.001,Qwen/Qwen3-4B,256,16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k ✅
 
 # ORZ experiments, new EGGROLL hparams based on deepscaler runs 
-0.001,0.0002,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
-0.001,0.000016,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.0002,Qwen/Qwen3-4B,[256✅|4096✅|16384✅],16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.000016,Qwen/Qwen3-4B,[256|4096✅|16384✅],16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
 
 # deepscaler experiments, based on deepscaler runs
-0.001,0.0002,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-deepscaler,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.0002,Qwen/Qwen3-4B,[256✅|4096✅|16384],16,rebuttal-deepscaler,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+
+# FAILED RUNS
+#0.001,0.0002,Qwen/Qwen3-4B,16384,16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.0002,Qwen/Qwen3-4B,16384,16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.0002,Qwen/Qwen3-4B,256,16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.000016,Qwen/Qwen3-4B,256,16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.0002,Qwen/Qwen3-4B,256,16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.0002,Qwen/Qwen3-4B,16384,16,rebuttal-orz,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.0002,Qwen/Qwen3-4B,256,16,rebuttal-deepscaler,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+0.001,0.0002,Qwen/Qwen3-4B,16384,16,rebuttal-deepscaler,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
