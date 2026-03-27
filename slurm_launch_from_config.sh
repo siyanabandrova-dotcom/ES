@@ -12,7 +12,7 @@ BASE_SCRIPT="slurm_launch_base.sh"
 TEMPLATE_FILE="experiments_template.csv" # Set to "" to skip expansion and use CONFIG_FILE directly
 CONFIG_FILE="experiments.csv"
 EXPAND_SCRIPT="expand_config.py"
-DELAY_SECONDS=5
+DELAY_SECONDS=10
 EXPERIMENT_DIR="/scratch/s5e/alv31415.s5e/experiments"
 USE_DEPENDENCIES=false  # Set to false to use real-time waiting instead
 
