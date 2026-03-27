@@ -57,6 +57,22 @@
 
 ## FAILED RUNS 
 
-0.001,0.0002,4096,Qwen/Qwen3-4B,4096,16,rebuttal-orz-grpo-no-norm,,scale-lr-in-grad,4,4,math2:orz57k
+#0.001,0.0002,4096,Qwen/Qwen3-4B,4096,16,rebuttal-orz-grpo-no-norm,,scale-lr-in-grad,auto,auto,math2:orz57k
 
-0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-orz-grpo,normalize-with-std,scale-lr-in-grad,4,4,math2:orz57k
+#0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-orz-grpo,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+
+# GRPO COMPARISON RUNS (POP = 16k)
+
+## NO NORMALIZE WITH STD & VARYING MAX TOKENS
+#0.001,0.0002,[4096|8192],Qwen/Qwen3-4B,16384,16,rebuttal-deepscaler-grpo-no-norm,,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.0002,[4096|8192],Qwen/Qwen3-4B,16384,16,rebuttal-orz-grpo-no-norm,,scale-lr-in-grad,auto,auto,math2:orz57k
+
+## NORMALIZE WITH STD & MAX TOKENS = 8192
+#0.001,0.0002,8192,Qwen/Qwen3-4B,16384,16,rebuttal-deepscaler-grpo,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.0002,8192,Qwen/Qwen3-4B,16384,16,rebuttal-orz-grpo,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+
+
+## REPEAT RUNS WITH BETTER PARAMS
+#0.001,0.0002,8192,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-orz-grpo-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.0002,8192,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-deepscaler-grpo-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-deepscaler-grpo-vllm,normalize-with-std,scale-lr-in-grad,4,4,math2:deepscaler40k
