@@ -10,43 +10,40 @@ For every eval step the script:
 Additionally, for every eval step a per-step ranking is printed so you can see
 which run was best at each point in training.
 
-Typical math-eval metrics discovered automatically:
-    eval/mean_fitness
-    eval/math_mean_fitness, eval/amc_mean_fitness,
-    eval/olympiad_bench_mean_fitness, eval/minerva_mean_fitness,
-    eval/aime24_mean_fitness, eval/gsm8k_mean_fitness,
-    eval/asdiv_mean_fitness, eval/aime25_mean_fitness
+Metric selection (in priority order):
+  1. --metrics a b c    explicit list
+  2. --default-metrics  use hardcoded MATH_EVAL_METRICS
+  3. (nothing)          auto-discover all eval/*_mean_fitness from run summaries
 
 Usage:
     python rank_eval_runs.py \\
         --project hyperscalees-vllm \\
-        [--entity  my-team] \\
-        [--name-filter "some_prefix.*"] \\
-        [--metrics eval/mean_fitness eval/gsm8k_mean_fitness ...] \\
+        [--entity my-team] \\
+        [--name-filter "rebuttal-(deepscaler|orz)-math2"] \\
+        [--default-metrics] \\
+        [--metrics eval/gsm8k_mean_fitness eval/aime24_mean_fitness ...] \\
         [--top-n 5] \\
         [--aggregate mean|sum] \\
-        [--exclude-aggregate-metric] \\
-        [--output ranked_runs.csv]
-
-If --metrics is omitted, every eval/* metric found in any run's summary is used.
-Use --exclude-aggregate-metric to drop 'eval/mean_fitness' from the composite
-(useful when you want to rank purely on per-task scores without double-counting).
+        [--output ranked_runs.csv] \\
+        [--global-output global_top_runs.csv]
 """
 
 import argparse
-from collections import defaultdict
 
 import pandas as pd
 import wandb
 
 
 # ---------------------------------------------------------------------------
-# MATH-EVAL SPLIT METRICS  (used for auto-discovery fallback label)
+# Constants
 # ---------------------------------------------------------------------------
+
+TIME_METRIC = "total_time"  # Cumulative wall-clock seconds logged at every train step
+
 MATH_EVAL_SPLITS = [
     "math", "amc", "olympiad_bench", "minerva",
-    "aime24", "gsm8k", "asdiv", "aime25",
-]
+    "aime24", "aime25",
+]  # gsm8k / asdiv excluded — adjust here if needed
 MATH_EVAL_METRICS = [f"eval/{s}_mean_fitness" for s in MATH_EVAL_SPLITS]
 
 
@@ -68,31 +65,31 @@ def fetch_runs(project: str, entity: str | None, name_filter: str | None) -> lis
 
 def autodiscover_metrics(runs: list) -> list[str]:
     """
-    Return per-benchmark eval metrics found in any run's summary.
-    Matches eval/<something>_mean_fitness but excludes the bare aggregate
-    eval/mean_fitness so the composite is never diluted by double-counting.
+    Return benchmark eval metrics found in any run's summary, intersected
+    with MATH_EVAL_METRICS so we never pick up unexpected extra metrics.
     """
     metric_set: set[str] = set()
     for run in runs:
         for key in run.summary.keys():
             if key.startswith("eval/") and key.endswith("_mean_fitness"):
                 metric_set.add(key)
-    metrics = sorted(metric_set)
+    metrics = sorted(metric_set & set(MATH_EVAL_METRICS))
     print(f"Auto-discovered {len(metrics)} benchmark metric(s): {metrics}")
     return metrics
 
 
 def fetch_histories(runs: list, metrics: list[str]) -> dict[str, pd.DataFrame]:
-    """Download per-run history for the requested metric columns."""
+    """Download per-run history for the requested metric columns + total_time."""
     histories: dict[str, pd.DataFrame] = {}
+    keys = metrics + [TIME_METRIC]
     for run in runs:
         try:
-            df = run.history(keys=metrics, x_axis="_step", pandas=True)
+            df = run.history(keys=keys, x_axis="_step", pandas=True)
             if df.empty:
-                print(f"  [skip] '{run.name}' — no history for requested metrics.")
+                print(f"  [skip] '{run.name}' -- no history for requested metrics.")
                 continue
             df["_run_name"] = run.name
-            df["_run_id"]   = run.id
+            df["_run_id"] = run.id
             histories[run.name] = df
         except Exception as exc:
             print(f"  [warn] Could not fetch history for '{run.name}': {exc}")
@@ -110,18 +107,20 @@ def build_scores_table(
     aggregate: str = "mean",
 ) -> pd.DataFrame:
     """
-    Build a long-form table of (step, run, metric, value) and then a wide table
-    of (step, run, composite_score, <one column per metric>).
+    Build a wide table of (step, run, training_time_s, composite_score, <metric cols>).
 
-    composite_score = mean (or sum) of the run's metric values at that step,
-    counting only the metrics that are actually present (non-NaN).
+    composite_score = mean (or sum) of the run's eval metric values at that step.
+    training_time_s = total_time logged at that step (cumulative wall-clock seconds).
     """
     records = []
     for run_name, df in histories.items():
         present_metrics = [m for m in metrics if m in df.columns]
         if not present_metrics:
             continue
-        sub = df[["_step"] + present_metrics].copy()
+        cols = ["_step"] + present_metrics
+        if TIME_METRIC in df.columns:
+            cols.append(TIME_METRIC)
+        sub = df[cols].copy()
         sub["_run_name"] = run_name
         records.append(sub)
 
@@ -130,7 +129,6 @@ def build_scores_table(
 
     combined = pd.concat(records, ignore_index=True)
 
-    # Compute composite score row-wise (ignoring NaN columns at each step)
     metric_cols = [m for m in metrics if m in combined.columns]
     if aggregate == "mean":
         combined["composite_score"] = combined[metric_cols].mean(axis=1, skipna=True)
@@ -139,7 +137,11 @@ def build_scores_table(
     else:
         raise ValueError(f"Unknown aggregate='{aggregate}'. Use 'mean' or 'sum'.")
 
-    combined = combined.rename(columns={"_step": "step", "_run_name": "run"})
+    combined = combined.rename(columns={
+        "_step": "step",
+        "_run_name": "run",
+        TIME_METRIC: "training_time_s",
+    })
     combined = combined.dropna(subset=["composite_score"])
     combined = combined.sort_values(["step", "composite_score"], ascending=[True, False])
     return combined
@@ -153,17 +155,21 @@ def rank_per_step(scores: pd.DataFrame, top_n: int) -> pd.DataFrame:
     """
     For each step, keep the top-N runs by composite_score.
     Returns a DataFrame with columns:
-        step, rank, run, composite_score, <metric cols...>
+        step, rank, run, training_time_s, training_time_h, composite_score, <metric cols...>
     """
     rows = []
-    metric_cols = [c for c in scores.columns if c not in ("step", "run", "composite_score")]
+    meta_cols = {"step", "run", "composite_score", "training_time_s"}
+    metric_cols = [c for c in scores.columns if c not in meta_cols]
     for step, grp in scores.groupby("step"):
         grp_sorted = grp.sort_values("composite_score", ascending=False).head(top_n)
         for rank, (_, row) in enumerate(grp_sorted.iterrows(), start=1):
+            t = row.get("training_time_s", float("nan"))
             entry: dict = {
                 "step": int(step),
                 "rank": rank,
-                "run":  row["run"],
+                "run": row["run"],
+                "training_time_s": t,
+                "training_time_h": t / 3600 if pd.notna(t) else float("nan"),
                 "composite_score": row["composite_score"],
             }
             for m in metric_cols:
@@ -179,7 +185,7 @@ def rank_per_step(scores: pd.DataFrame, top_n: int) -> pd.DataFrame:
 def global_top_n(scores: pd.DataFrame, top_n: int) -> pd.DataFrame:
     """
     Find the top-N (run, step) pairs across all steps by composite_score.
-    Ties broken by step (earlier step wins — conservative choice for papers).
+    Ties broken by step (earlier step wins -- conservative choice for papers).
     """
     sorted_all = scores.sort_values(
         ["composite_score", "step"],
@@ -195,9 +201,19 @@ def global_top_n(scores: pd.DataFrame, top_n: int) -> pd.DataFrame:
 # Pretty printing
 # ---------------------------------------------------------------------------
 
+def _fmt_time(seconds: float) -> str:
+    """Format seconds as Xh Ym Zs, or '?' if missing."""
+    if not pd.notna(seconds):
+        return "?"
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    return f"{h}h {m:02d}m {s:02d}s"
+
+
 def print_per_step_summary(ranked: pd.DataFrame, top_n: int) -> None:
-    metric_cols = [c for c in ranked.columns
-                   if c not in ("step", "rank", "run", "composite_score")]
+    meta_cols = {"step", "rank", "run", "composite_score", "training_time_s", "training_time_h"}
+    metric_cols = [c for c in ranked.columns if c not in meta_cols]
     for step in sorted(ranked["step"].unique()):
         grp = ranked[ranked["step"] == step].sort_values("rank")
         print(f"\n  Step {step}")
@@ -207,14 +223,16 @@ def print_per_step_summary(ranked: pd.DataFrame, top_n: int) -> None:
                 for m in metric_cols
                 if pd.notna(row.get(m))
             )
+            time_str = _fmt_time(row.get("training_time_s", float("nan")))
             print(f"    #{int(row['rank'])}: {row['run']}"
                   f"  composite={row['composite_score']:.4f}"
+                  f"  time={time_str}"
                   + (f"  [{metric_str}]" if metric_str else ""))
 
 
 def print_global_summary(top: pd.DataFrame) -> None:
-    metric_cols = [c for c in top.columns
-                   if c not in ("step", "run", "composite_score")]
+    meta_cols = {"step", "run", "composite_score", "training_time_s", "training_time_h"}
+    metric_cols = [c for c in top.columns if c not in meta_cols]
     print(f"\n{'='*70}")
     print("GLOBAL TOP RUNS  (best composite score across all eval steps)")
     print(f"{'='*70}")
@@ -224,9 +242,11 @@ def print_global_summary(top: pd.DataFrame) -> None:
             for m in metric_cols
             if pd.notna(row.get(m))
         )
+        time_str = _fmt_time(row.get("training_time_s", float("nan")))
         print(f"  #{rank}: {row['run']}"
               f"  @step={int(row['step'])}"
-              f"  composite={row['composite_score']:.4f}")
+              f"  composite={row['composite_score']:.4f}"
+              f"  time={time_str}")
         if metric_str:
             print(f"       [{metric_str}]")
 
@@ -248,13 +268,12 @@ def main() -> None:
                         help="Regex applied to run display names  (optional)")
     parser.add_argument("--metrics", nargs="*", default=None,
                         help="Explicit list of W&B metrics to use. "
-                             "Auto-discovered from run summaries if omitted.")
+                             "Takes priority over --default-metrics and auto-discovery.")
     parser.add_argument("--top-n", type=int, default=3,
                         help="How many top runs to report  (default: 3)")
     parser.add_argument("--aggregate", choices=["mean", "sum"], default="mean",
                         help="How to combine per-metric scores into a composite "
                              "(default: mean)")
-
     parser.add_argument("--output", default="ranked_eval_runs.csv",
                         help="Path for the per-step ranking CSV  "
                              "(default: ranked_eval_runs.csv)")
@@ -283,7 +302,6 @@ def main() -> None:
               "Pass --metrics explicitly or check your W&B runs.")
         return
 
-
     # 3. Download histories --------------------------------------------------
     histories = fetch_histories(runs, metrics)
     if not histories:
@@ -293,7 +311,7 @@ def main() -> None:
     # 4. Build composite score table -----------------------------------------
     scores = build_scores_table(histories, metrics, aggregate=args.aggregate)
     if scores.empty:
-        print("Scores table is empty — no overlapping (step, metric) data found.")
+        print("Scores table is empty -- no overlapping (step, metric) data found.")
         return
 
     # 5. Per-step ranking ----------------------------------------------------
@@ -318,11 +336,13 @@ def main() -> None:
     print(f"\n{'='*70}")
     print("BEST CHECKPOINT FOR PAPER")
     print(f"{'='*70}")
-    print(f"  Run  : {best['run']}")
-    print(f"  Step : {int(best['step'])}")
+    print(f"  Run            : {best['run']}")
+    print(f"  Step           : {int(best['step'])}")
+    print(f"  Training time  : {_fmt_time(best.get('training_time_s', float('nan')))} "
+          f"({best.get('training_time_s', float('nan')):.0f}s)")
     print(f"  Composite ({args.aggregate}) : {best['composite_score']:.4f}")
-    metric_cols = [c for c in global_top.columns
-                   if c not in ("step", "run", "composite_score")]
+    meta_cols = {"step", "run", "composite_score", "training_time_s", "training_time_h"}
+    metric_cols = [c for c in global_top.columns if c not in meta_cols]
     for m in metric_cols:
         if pd.notna(best.get(m)):
             print(f"  {m.split('eval/')[-1]:35s}: {best[m]:.4f}")
