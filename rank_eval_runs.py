@@ -42,8 +42,8 @@ TIME_METRIC = "total_time"  # Cumulative wall-clock seconds logged at every trai
 
 MATH_EVAL_SPLITS = [
     "math", "amc", "olympiad_bench", "minerva",
-    "aime24", "aime25",
-]  # gsm8k / asdiv excluded — adjust here if needed
+    "aime24", "aime25"
+]  # "aime25", gsm8k / asdiv excluded — adjust here if needed
 MATH_EVAL_METRICS = [f"eval/{s}_mean_fitness" for s in MATH_EVAL_SPLITS]
 
 
