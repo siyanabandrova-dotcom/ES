@@ -98,6 +98,7 @@ class Args:
             TP_CONFIG = {
                 # "Qwen/Qwen3-1.7B": 2, # for debugging tp
                 "Qwen/Qwen3-4B": 1, # for debugging tp
+                "Qwen/Qwen3-4B-Base": 1,
                 "Qwen/Qwen3-8B": 1,
                 "Qwen/Qwen3-30B": 2,
                 "Qwen/Qwen3-30B-Base": 2,

@@ -75,4 +75,11 @@
 ## REPEAT RUNS WITH BETTER PARAMS
 #0.001,0.0002,8192,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-orz-grpo-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
 #0.001,0.0002,8192,Qwen/Qwen3-4B,[256|4096|16384],16,rebuttal-deepscaler-grpo-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
-0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-deepscaler-grpo-vllm,normalize-with-std,scale-lr-in-grad,4,4,math2:deepscaler40k
+#0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-deepscaler-grpo-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+
+# QWEN3-4B-BASE
+#0.001,0.0002,4096,Qwen/Qwen3-4B-Base,16384,16,rebuttal-deepscaler-base,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+
+# REDO BEST RUNS 
+0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-orz-best-vllm,normalize-with-std,scale-lr-in-grad,4,4,math2:orz57k
+0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-deepscaler-best-vllm,normalize-with-std,scale-lr-in-grad,4,4,math2:deepscaler40k

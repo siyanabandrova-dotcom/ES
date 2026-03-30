@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#SBATCH --job-name=rebuttal_4b_grpocomp
+#SBATCH --job-name=rebuttal_4b_base
 #SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/rebuttal_4b_grpocomp-%j.log
+#SBATCH --output=/scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/rebuttal_4b_base-%j.log
 #SBATCH --cpus-per-task=64
 #SBATCH --ntasks-per-node=1
 
@@ -43,7 +43,7 @@ temperature="0.0"
 # If you want the flag enabled, set pass_at_k="pass-at-k" (or "no-pass-at-k")
 # To disable/omit, set pass_at_k="no-pass-at-k"
 pass_at_k="no-pass-at-k"
-steps_per_eval="10"
+steps_per_eval="1"
 # Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
 name_prefix="debug-n16"
