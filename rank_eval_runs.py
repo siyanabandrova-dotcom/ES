@@ -41,9 +41,9 @@ import wandb
 TIME_METRIC = "total_time"  # Cumulative wall-clock seconds logged at every train step
 
 MATH_EVAL_SPLITS = [
-    "math", "amc", "olympiad_bench", "minerva",
+    "math", "olympiad_bench", "minerva",
     "aime24", "aime25"
-]  # "aime25", gsm8k / asdiv excluded — adjust here if needed
+]  # "amc", "aime25", gsm8k / asdiv excluded — adjust here if needed
 MATH_EVAL_METRICS = [f"eval/{s}_mean_fitness" for s in MATH_EVAL_SPLITS]
 
 

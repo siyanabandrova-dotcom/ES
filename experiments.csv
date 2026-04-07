@@ -81,5 +81,29 @@
 #0.001,0.0002,4096,Qwen/Qwen3-4B-Base,16384,16,rebuttal-deepscaler-base,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
 
 # REDO BEST RUNS 
-0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-orz-best-vllm,normalize-with-std,scale-lr-in-grad,4,4,math2:orz57k
-0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-deepscaler-best-vllm,normalize-with-std,scale-lr-in-grad,4,4,math2:deepscaler40k
+#0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-orz-best-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.0002,8192,Qwen/Qwen3-4B,4096,16,rebuttal-deepscaler-best-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+
+# QWEN3-4B-BASE 2
+#0.001,0.001,[8192|4096],Qwen/Qwen3-4B-Base,[256|4096|16384],16,rebuttal-deepscaler-base-anya,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.001,[8192|4096],Qwen/Qwen3-4B-Base,[256|4096|16384],16,rebuttal-orz-base-anya,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.001,8192,Qwen/Qwen3-4B-Base,16384,16,rebuttal-orz-base-anya,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.001,4096,Qwen/Qwen3-4B-Base,16384,16,rebuttal-deepscaler-base-anya,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.001,8192,Qwen/Qwen3-4B-Base,16384,16,rebuttal-deepscaler-base-anya,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.001,8192,Qwen/Qwen3-4B-Base,4096,16,rebuttal-deepscaler-base-anya,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+
+# REDO RUNS WITH SMALL POP 
+#0.001,0.0002,[4096|8192],Qwen/Qwen3-4B,256,16,rebuttal-orz-small-pop-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.0002,[4096|8192],Qwen/Qwen3-4B,256,16,rebuttal-deepscaler-small-pop-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+#0.001,0.001,[4096|8192],Qwen/Qwen3-4B,256,16,rebuttal-orz-small-pop-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
+#0.001,0.001,[4096|8192],Qwen/Qwen3-4B,256,16,rebuttal-deepscaler-small-pop-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:deepscaler40k
+
+# QWEN3-4B-BASE 3
+#0.001,0.001,[8192|4096],Qwen/Qwen3-4B-Base,[256|4096],16,rebuttal-deepscaler-base-anya-noscale,normalize-with-std,,auto,auto,math2:deepscaler40k
+#0.001,0.001,[8192|4096],Qwen/Qwen3-4B-Base,[256|4096],16,rebuttal-orz-base-anya-noscale,normalize-with-std,,auto,auto,math2:orz57k
+#0.001,0.001,4096,Qwen/Qwen3-4B-Base,256,16,rebuttal-orz-base-anya-noscale,normalize-with-std,,auto,auto,math2:orz57k
+
+
+# FAILED SMALL POP
+0.001,0.0002,8192,Qwen/Qwen3-4B,256,16,rebuttal-orz-small-pop-vllm,normalize-with-std,scale-lr-in-grad,1,1,math2:orz57k
+#0.001,0.001,4096,Qwen/Qwen3-4B,256,16,rebuttal-orz-small-pop-vllm,normalize-with-std,scale-lr-in-grad,auto,auto,math2:orz57k
