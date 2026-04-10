@@ -1,4 +1,10 @@
-# Hyperscale ES with vLLM
+# EGGROLL Hyperscale ES with vLLM
+
+<div align="center">
+  [![arXiv](https://img.shields.io/badge/arXiv-2511.16652-b31b1b.svg)](https://arxiv.org/abs/2511.16652)
+</div>
+
+This repo contains the official code for the transformer LLM experiments in the paper [Evolution Strategies at the Hyperscale](https://arxiv.org/abs/2511.16652). 
 
 ## Code:
 
@@ -9,11 +15,10 @@ The main script is `es_lora_multinode.py`. This is an almost single file impleme
 
 ## Tasks:
 
-- `zeros`: Task is to output all zeros.
-- `gsm8k`, `gsm8k-boxed`: GSM8K questions without and with requiring `\\boxed{}` formatting.
+- `math:gsm8k`, `math:asdiv2k`, `math:math12k`, `math:orz57k`, `math:deepscaler40k`: Math questions. These tasks trigger automatic evaluation on `["math", "amc", "olympiad_bench", "minerva", "aime24"]`.
+- `zeros`: For debugging. Task is to output all zeros.
+- `random`, `random-boxed`:  For exploring behaviour with pass@k objective. Aim is to guess a random number. Options without and with requiring `\\boxed{}` formatting.
 - `countdown`: Questions in countdown.json from https://github.com/VsonicV/es-fine-tuning-paper.
-- `random`, `random-boxed`: Aim is to guess the random number without and with requiring `\\boxed{}` formatting. (For exploring behaviour with pass@k objective.)
-- `math2:gsm8k`, `math2:asdiv2k`, `math2:math12k`, `math2:orz57k`, `math2:deepscaler40k`: Math questions. These tasks trigger automatic evaluation on `["math", "amc", "olympiad_bench", "minerva", "aime24"]`.
 
 
 ## Installation:
@@ -25,9 +30,7 @@ export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 ```
 
-Install uv: https://docs.isambard.ac.uk/user-documentation/guides/python/#uv-installation-and-usage
-
-Then install vllm:
+Then install `vllm, tyro, wandb, weave, peft, datasets, gem-llm, pylatexenc`, e.g. with:
 ```bash
 cd $SCRATCH && mkdir uv_envs && cd uv_envs && mkdir vllm_env
 cd $SCRATCH/uv_envs/vllm_env
@@ -44,7 +47,7 @@ uv pip install gem-llm
 uv pip install pylatexenc
 ```
 
-Download model to cache, eg:
+Before running, dowload model to cache, e.g. with:
 
 ```bash
 source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate
@@ -58,4 +61,4 @@ model, tokenizer = AutoModelForCausalLM.from_pretrained(model_name), AutoTokeniz
 
 ## Launching jobs:
 
-Use `sbatch slurm_launch_multinode_n1.sh` and `sbatch slurm_launch_multinode_n16.sh` launch jobs on 1 and 16 nodes of 4 gpus respectively. Hyperparameters can be edited within the launch scripts.
+Use `sbatch slurm_launch_multinode_n1.sh` and `sbatch slurm_launch_multinode_n16.sh` launch jobs on 1 and 16 nodes of 4 gpus respectively. Hyperparameters can be changed within the bash launch scripts.
