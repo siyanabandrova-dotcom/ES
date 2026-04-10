@@ -6,7 +6,7 @@ This repo contains the official code for the transformer LLM experiments in the 
 
 ## Code:
 
-The main script is `es_lora_multinode.py`. This is an almost single file implementation, apart from the tasks which are in `tasks.py`. (`es_lora_multigpu.py` is an old single-node version of the code.)
+The main script is `es_lora_multinode.py`. This is an almost single file implementation, apart from the tasks which are in `tasks.py`.
 
 `es_lora_multinode_moe.py` is the updated version that supports **Mixture-of-Experts (MoE)** models with Tensor Parallelism and Multi-LoRA (requires vLLM >= 0.16.0). It is backward compatible with `es_lora_multinode.py`.
 
