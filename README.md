@@ -1,8 +1,6 @@
 # EGGROLL Hyperscale ES with vLLM
 
-<div align="center">
-  [![arXiv](https://img.shields.io/badge/arXiv-2511.16652-b31b1b.svg)](https://arxiv.org/abs/2511.16652)
-</div>
+[![Paper](https://img.shields.io/badge/paper-A42C25?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2511.16652)
 
 This repo contains the official code for the transformer LLM experiments in the paper [Evolution Strategies at the Hyperscale](https://arxiv.org/abs/2511.16652). 
 
