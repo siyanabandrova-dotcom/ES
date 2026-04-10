@@ -36,13 +36,7 @@ uv venv --seed -p=3.12
 source $SCRATCH/uv_envs/vllm_env/.venv/bin/activate
 # To support MoE + TP + Multi-LoRA, use vLLM 0.16.0 or later
 srun --gpus 1 uv pip install vllm==0.17.0 --torch-backend=auto
-uv pip install tyro
-uv pip install wandb
-uv pip install weave
-uv pip install peft
-uv pip install datasets
-uv pip install gem-llm
-uv pip install pylatexenc
+uv pip install tyro wandb weave peft datasets gem-llm pylatexenc
 ```
 
 Before running, dowload model to cache, e.g. with:
