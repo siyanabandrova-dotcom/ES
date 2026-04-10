@@ -1,15 +1,14 @@
 #!/bin/bash
 
-#SBATCH --job-name=eggroll_debug_n32_110b_p8k
-#SBATCH --nodes=32
+#SBATCH --job-name=4b_base-pop16k-n16
+#SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/multinode_n32-%j.log
-#SBATCH --cpus-per-task=128
+#SBATCH --cpus-per-task=64
 #SBATCH --ntasks-per-node=1
 
 # --- Create logs directory if it doesn't exist ---
-LOG_DIR="/scratch/s5j/alv31415.s5j/logs/hyperscale-es-vllm/"
+LOG_DIR="./hyperscale-es-vllm/logs/"
 mkdir -p "$LOG_DIR"
 
 echo "---------------------------------"
@@ -17,36 +16,33 @@ echo "Starting job $SLURM_JOB_ID on $(hostname)"
 echo "Nodes involved: $SLURM_JOB_NODELIST"
 echo "Running on GPU(s): $(nvidia-smi --query-gpu=gpu_name --format=csv,noheader)"
 echo "Number of GPUs per node: $(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
-echo "Log file: $LOG_DIR/multinode_n32-$SLURM_JOB_ID.log"
+echo "Log file: $LOG_DIR/multinode_n16-$SLURM_JOB_ID.log"
 echo "---------------------------------"
 
 # -----------------------------------------
-# User-settable parameters (edit these)
+# User-settable parameters
 # -----------------------------------------
 sigma="0.001"
-learning_rate="0.001"
+learning_rate="0.0002"
 max_tokens="4096"
-model_name="Qwen/Qwen1.5-110B-Chat"
-population_size="8192"
+model_name="Qwen/Qwen3-4B"
+population_size="16384"
 steps_per_adapter="4"
 lora_r="1"
-task="math2:deepscaler40k"
-# If you want the flag enabled, set normalize_with_std="normalize-with-std"
-# To disable, set normalize_with_std="" (empty string)
-normalize_with_std=""
-# If you want the flag enabled, set scale_lr_in_grad="scale-lr-in-grad"
-# To disable, set scale_lr_in_grad="no-scale-lr-in-grad" or "" (empty string)
+task="math:deepscaler40k"
+normalize_with_std="normalize-with-std"
+# set normalize_with_std="normalize-with-std" to enable, and ="" to disable
 scale_lr_in_grad=""
+# set scale_lr_in_grad="scale-lr-in-grad" to enable, and ="" to disable
 prompt_batch_size="16"
 samples_per_prompt="1"
 temperature="0.0"
-# If you want the flag enabled, set pass_at_k="pass-at-k" (or "no-pass-at-k")
-# To disable/omit, set pass_at_k="no-pass-at-k"
 pass_at_k="no-pass-at-k"
-steps_per_eval="10"
-# Set to "null" or "None" or empty string to use full dataset
+# set pass_at_k="pass-at-k" to enable, and "no-pass-at-k" to disable
+steps_per_eval="1"
 sub_dataset_size="null"
-name_prefix="debug-n32"
+# Set to "null" or "None" or empty string to use full dataset
+name_prefix="4b_base-pop16k-n16"
 
 # -----------------------------------------
 
@@ -77,9 +73,6 @@ else
     DATASET_SIZE_CMD="--sub-dataset-size $sub_dataset_size"
 fi
 
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-
 # --- Activate Environment ---
 echo "Activating virtual environment..."
 source "$SCRATCH/uv_envs/vllm_env/.venv/bin/activate"
@@ -87,8 +80,41 @@ source "$SCRATCH/uv_envs/vllm_env/.venv/bin/activate"
 # --- Set WandB directory ---
 export WANDB_DIR="$SCRATCH/for_esvllm/wandb"
 
+# --- Allow expandable PyTorch memory --- 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # --- Force Hugging Face to use offline mode (avoid rate limiting) ---
-# export HF_HUB_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# --- Conditionally set compile caches based on model size ---
+# Extracts the numeric value immediately before a standalone 'B' in the model name
+# e.g. "Qwen3-4B" -> 4, "Meta-Llama-3-70B" -> 70, "mistral-7b" -> 7
+get_model_size_b() {
+    local name="$1"
+    local size
+    size=$(echo "$name" | grep -oiP '\d+(?=b\b)' | tail -1)
+    echo "${size:-0}"
+}
+
+model_size_b=$(get_model_size_b "$model_name")
+
+if [ "$model_size_b" -gt 0 ] && [ "$model_size_b" -lt 14 ]; then
+    echo "Model size is ${model_size_b}B (< 14B): enabling job-specific compile caches"
+    export VLLM_CACHE_ROOT="$SCRATCH/.cache/vllm_${SLURM_JOB_ID}"
+    export TRITON_CACHE_DIR="$SCRATCH/.triton_cache_${SLURM_JOB_ID}"
+    export TORCHINDUCTOR_CACHE_DIR="$SCRATCH/.inductor_cache_${SLURM_JOB_ID}"
+    mkdir -p "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+
+    cleanup_caches() {
+        echo "Cleaning up job-specific caches..."
+        rm -rf "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+        echo "Cache cleanup complete"
+    }
+    trap cleanup_caches EXIT
+else
+    echo "Model size is ${model_size_b}B (>= 14B or unparseable): skipping job-specific compile caches"
+fi
 
 # --- Change to Working Directory ---
 echo "Changing to working directory..."
@@ -153,7 +179,6 @@ python -c "import ray; ray.init(address='auto'); print('Ray Cluster Resources:',
 
 # --- Run the Python Script (Head Node Only) ---
 echo "Starting Python script..."
-# Note: The python script connects to the Ray cluster we just built
 
 # Build flag strings for optional flags (only add if non-empty)
 NORMALIZE_FLAG=""

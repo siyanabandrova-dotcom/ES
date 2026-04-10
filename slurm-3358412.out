@@ -1,5 +1,0 @@
-Expanding template 'experiments_template.csv' → 'experiments.csv'...
-Expanded experiments_template.csv → experiments.csv (9 rows generated from templates)
-Expansion complete.
-
-mkdir: cannot create directory ‘/scratch/s5j’: Permission denied

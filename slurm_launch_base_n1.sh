@@ -1,15 +1,14 @@
 #!/bin/bash
 
-#SBATCH --job-name=rebuttal_4b_base
-#SBATCH --nodes=16
+#SBATCH --job-name=4b_base-pop1k-n1
+#SBATCH --nodes=1
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/rebuttal_4b_base-%j.log
 #SBATCH --cpus-per-task=64
 #SBATCH --ntasks-per-node=1
 
 # --- Create logs directory if it doesn't exist ---
-LOG_DIR="/scratch/s5e/alv31415.s5e/logs/hyperscale-es-vllm/"
+LOG_DIR="./hyperscale-es-vllm/logs/"
 mkdir -p "$LOG_DIR"
 
 echo "---------------------------------"
@@ -17,36 +16,33 @@ echo "Starting job $SLURM_JOB_ID on $(hostname)"
 echo "Nodes involved: $SLURM_JOB_NODELIST"
 echo "Running on GPU(s): $(nvidia-smi --query-gpu=gpu_name --format=csv,noheader)"
 echo "Number of GPUs per node: $(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
-echo "Log file: $LOG_DIR/multinode_n16-$SLURM_JOB_ID.log"
+echo "Log file: $LOG_DIR/multinode_n1-$SLURM_JOB_ID.log"
 echo "---------------------------------"
 
 # -----------------------------------------
-# User-settable parameters (edit these)
+# User-settable parameters
 # -----------------------------------------
 sigma="0.001"
 learning_rate="0.0002"
 max_tokens="4096"
 model_name="Qwen/Qwen3-4B"
-population_size="16384"
+population_size="1024"
 steps_per_adapter="4"
 lora_r="1"
-task="math2:deepscaler40k"
-# If you want the flag enabled, set normalize_with_std="normalize-with-std"
-# To disable, set normalize_with_std="" (empty string)
+task="math:deepscaler40k"
 normalize_with_std="normalize-with-std"
-# If you want the flag enabled, set scale_lr_in_grad="scale-lr-in-grad"
-# To disable, set scale_lr_in_grad="no-scale-lr-in-grad" or "" (empty string)
+# set normalize_with_std="normalize-with-std" to enable, and ="" to disable
 scale_lr_in_grad=""
+# set scale_lr_in_grad="scale-lr-in-grad" to enable, and ="" to disable
 prompt_batch_size="16"
 samples_per_prompt="1"
 temperature="0.0"
-# If you want the flag enabled, set pass_at_k="pass-at-k" (or "no-pass-at-k")
-# To disable/omit, set pass_at_k="no-pass-at-k"
 pass_at_k="no-pass-at-k"
+# set pass_at_k="pass-at-k" to enable, and "no-pass-at-k" to disable
 steps_per_eval="1"
-# Set to "null" or "None" or empty string to use full dataset
 sub_dataset_size="null"
-name_prefix="debug-n16"
+# Set to "null" or "None" or empty string to use full dataset
+name_prefix="4b_base-pop1k-n1"
 
 # -----------------------------------------
 

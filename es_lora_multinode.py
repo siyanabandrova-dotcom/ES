@@ -31,7 +31,7 @@ from peft import LoraConfig, get_peft_model
 from vllm.lora.request import LoRARequest
 from safetensors.torch import save_file, load_file
 
-from tasks import MathTask, CountdownTask, ZerosTask, MathTask2, RandomTask, DrawEggTask, DrawChickTask
+from tasks import MathTask, CountdownTask, ZerosTask, RandomTask
 
 print("IMPORTS: All imports completed successfully", flush=True)
 print("=" * 80, flush=True)
@@ -53,7 +53,7 @@ class Args:
     max_tokens: int = 1024
     temperature: float = 0.0
     samples_per_prompt: int = 1
-    task: str = "zeros"  # Options: "zeros", "gsm8k", "gsm8k-boxed", ...
+    task: str = "zeros"  # Options: "zeros", "countdown", "math:deepscaler40k", ...
     prompt_batch_size: int = 2
     pass_at_k: bool = False
     normalize_with_std: bool = False
@@ -1248,24 +1248,6 @@ def main(args: Args):
             batch_size=args.prompt_batch_size,
             max_tokens=args.max_tokens
         )
-    elif args.task == "gsm8k":
-        task = MathTask(
-            batch_size=args.prompt_batch_size,
-            seed=args.base_seed,
-            dataset_name="openai/gsm8k",
-            split="train",
-            datset_size=args.sub_dataset_size,
-            answer_format="none"
-        )
-    elif args.task == "gsm8k-boxed":
-        task = MathTask(
-            batch_size=args.prompt_batch_size,
-            seed=args.base_seed,
-            dataset_name="openai/gsm8k",
-            split="train",
-            datset_size=args.sub_dataset_size,
-            answer_format="boxed"
-        )
     elif args.task == "countdown":
         task = CountdownTask(
             batch_size=args.prompt_batch_size,
@@ -1273,9 +1255,9 @@ def main(args: Args):
             datset_size=args.sub_dataset_size,
             end_token=None
         )
-    elif args.task.startswith("math2-answer-tags:"):
-        dataset_name = args.task.split("math2-answer-tags:")[1]
-        task = MathTask2(
+    elif args.task.startswith("math:answer-tags:"):
+        dataset_name = args.task.split("math:answer-tags:")[1]
+        task = MathTask(
             batch_size=args.prompt_batch_size,
             seed=args.base_seed,
             # tokenizer=tokenizer,
@@ -1284,9 +1266,9 @@ def main(args: Args):
             apply_chat_template=False,
             answer_format="answer_tags"
         )
-    elif args.task.startswith("math2:"):
-        dataset_name = args.task.split("math2:")[1]
-        task = MathTask2(
+    elif args.task.startswith("math:"):
+        dataset_name = args.task.split("math:")[1]
+        task = MathTask(
             batch_size=args.prompt_batch_size,
             seed=args.base_seed,
             # tokenizer=tokenizer,
@@ -1308,23 +1290,6 @@ def main(args: Args):
             seed=args.base_seed,
             answer_format="boxed",
         )
-    elif args.task.startswith("drawegg"):
-        distance_metric = args.task.split("-")[-1]
-        assert distance_metric in ["jsd", "tvd", "chi2", "kl"], f"Unknown distance metric: {distance_metric}"
-        task = DrawEggTask(
-            batch_size=args.prompt_batch_size,
-            answer_format="boxed" if "boxed" in args.task else "none",
-            distance_metric=distance_metric,
-            pass_at_k=args.pass_at_k,
-        )
-    elif args.task.startswith("drawchick"):
-        distance_metric = args.task.split("-")[-1]
-        assert distance_metric in ["jsd", "tvd", "chi2", "kl"], f"Unknown distance metric: {distance_metric}"
-        task = DrawChickTask(
-            batch_size=args.prompt_batch_size,
-            distance_metric=distance_metric,
-            pass_at_k=args.pass_at_k,
-        )
     else:
         raise ValueError(f"Unknown task: {args.task}")
     
@@ -1337,7 +1302,7 @@ def main(args: Args):
         stop=[tokenizer.eos_token, "<|im_end|>", "<|endoftext|>"],
     )
     do_eval = False
-    if "math2" in args.task and args.steps_per_eval > 0:
+    if "math:" in args.task and args.steps_per_eval > 0:
         do_eval = True
         print("--- Configuring Evaluation Tasks ---")
         answer_format = "answer_tags" if "answer-tags" in args.task else "none"
@@ -1355,7 +1320,7 @@ def main(args: Args):
             n=1,
             stop=[tokenizer.eos_token],
         )
-        eval_task = MathTask2(
+        eval_task = MathTask(
             batch_size=args.eval_batch_size,
             seed=args.base_seed + 12345,
             # tokenizer=tokenizer,
