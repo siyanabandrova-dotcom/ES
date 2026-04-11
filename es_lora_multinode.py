@@ -96,21 +96,24 @@ class Args:
             # Dictionary of models that benefit from tensor parallelism
             # Maps model name patterns to recommended TP size
             TP_CONFIG = {
-                # "Qwen/Qwen3-1.7B": 2, # for debugging tp
-                "Qwen/Qwen3-4B": 1, # for debugging tp
-                "Qwen/Qwen3-4B-Base": 1,
-                "Qwen/Qwen3-8B": 1,
-                "Qwen/Qwen3-30B": 2,
-                "Qwen/Qwen3-30B-Base": 2,
-                "Qwen/Qwen3-32B": 4,
+                # Qwen 1.5
+                "Qwen/Qwen1.5-110B": 4,
+                "Qwen/Qwen1.5-110B-Chat": 4,
+                # Qwen 2.5
+                "Qwen/Qwen2.5-1.5B": 1,
                 "Qwen/Qwen2.5-14B": 2,
                 "Qwen/Qwen2.5-32B": 4,
                 "Qwen/Qwen2.5-32B-Instruct": 4,
                 "Qwen/Qwen2.5-72B": 4,
                 "Qwen/Qwen2.5-72B-Instruct": 4,
-                "Qwen/Qwen1.5-110B": 4,
-                "Qwen/Qwen1.5-110B-Chat": 4,
-                "Qwen/Qwen2.5-1.5B": 2, # for debugging tp
+                # Qwen 3
+                "Qwen/Qwen3-1.7B": 1,
+                "Qwen/Qwen3-4B": 1,
+                "Qwen/Qwen3-4B-Base": 1,
+                "Qwen/Qwen3-8B": 1,
+                "Qwen/Qwen3-30B": 2,
+                "Qwen/Qwen3-30B-Base": 2,
+                "Qwen/Qwen3-32B": 4,
             }
 
             # Check if model_name matches any pattern
@@ -642,7 +645,7 @@ class ESNcclLLM(LLM):
         for pop_idx in population_indices:
             adapter_path = os.path.join(self.lora_storage_path, f"pop_{pop_idx}")
 
-            # Try to create directory with robust error handling
+            # Try to create directory with error handling
             try:
                 os.makedirs(adapter_path, exist_ok=True)
             except (PermissionError, OSError) as e:
@@ -792,7 +795,7 @@ class ESNcclLLM(LLM):
 
             truncateds = [o.finish_reason == "length" for o in output.outputs]
 
-            # Get fitness using the refactored get_fitness
+            # Get fitness
             fit, model_answers, sample_fitnesses, task_info = task_obj.get_fitness(responses, truncateds, gt_answer, pass_at_k=args.pass_at_k)
 
             # Collect task-specific info
@@ -936,15 +939,15 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
         model_lower = model_name.lower()
         if "110b" in model_lower:
             max_num_seqs = 384
-            max_num_batched_tokens = 16 * args.max_tokens // 4
+            max_num_batched_tokens = 4 * args.max_tokens
             gpu_mem_util = 0.9
         elif "72b" in model_lower:
             max_num_seqs = 384
-            max_num_batched_tokens = 16 * args.max_tokens // 4
+            max_num_batched_tokens = 4 * args.max_tokens
             gpu_mem_util = 0.9
         else:
             max_num_seqs = 512
-            max_num_batched_tokens = 16 * args.max_tokens // 2
+            max_num_batched_tokens = 8 * args.max_tokens
             gpu_mem_util = 0.9
 
         engines = [
@@ -1214,7 +1217,7 @@ def main(args: Args):
     print("MAIN: Capturing PEFT state dict...", flush=True)
     sys.stdout.flush()
 
-    # IMPORTANT FIX: Since the model is on 'meta', state_dict() returns empty tensors.
+    # IMPORTANT: Since the model is on 'meta', state_dict() returns empty tensors.
     # We create a REAL dictionary on CPU for the Master Weights.
     peft_state_dict = {}
     for name, param in peft_model.named_parameters():

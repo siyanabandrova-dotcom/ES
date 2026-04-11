@@ -96,21 +96,25 @@ class Args:
             # Dictionary of models that benefit from tensor parallelism
             # Maps model name patterns to recommended TP size
             TP_CONFIG = {
-                # "Qwen/Qwen3-1.7B": 2, # for debugging tp
-                "Qwen/Qwen3-4B": 1, # for debugging tp
-                "Qwen/Qwen3-8B": 1,
-                "Qwen/Qwen3-30B": 2,
-                "Qwen/Qwen3-30B-Base": 2,
-                "Qwen/Qwen3-32B": 4,
+                # Qwen 1.5
+                "Qwen/Qwen1.5-110B": 4,
+                "Qwen/Qwen1.5-110B-Chat": 4,
+                # Qwen 2.5
+                "Qwen/Qwen2.5-1.5B": 1,
                 "Qwen/Qwen2.5-14B": 2,
                 "Qwen/Qwen2.5-32B": 4,
                 "Qwen/Qwen2.5-32B-Instruct": 4,
                 "Qwen/Qwen2.5-72B": 4,
                 "Qwen/Qwen2.5-72B-Instruct": 4,
-                "Qwen/Qwen1.5-110B": 4,
-                "Qwen/Qwen1.5-110B-Chat": 4,
-                "Qwen/Qwen2.5-1.5B": 2, # for debugging tp
-                # MOE MODELS
+                # Qwen 3
+                "Qwen/Qwen3-1.7B": 1,
+                "Qwen/Qwen3-4B": 1,
+                "Qwen/Qwen3-4B-Base": 1,
+                "Qwen/Qwen3-8B": 1,
+                "Qwen/Qwen3-30B": 2,
+                "Qwen/Qwen3-30B-Base": 2,
+                "Qwen/Qwen3-32B": 4,
+                # MOE
                 "Qwen/Qwen1.5-MoE-A2.7B": 2,
                 "Qwen/Qwen3-30B-A3B-Thinking-2507": 4,
                 "openai/gpt-oss-20b": 4
@@ -206,9 +210,7 @@ def map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, device: torch.
                     target_name = re.sub(r"experts\.\d+\.gate_proj", "experts.gate_up_proj", vllm_name)
                     if target_name in vllm_updates_dict:
                         start = 0
-                        vllm_size = vllm_updates_dict[target_name].shape[1] # 2nd dim for fused shape in updates dict? wait, it's [experts, 2*inter, hidden]
-                        # Actually vllm_updates_dict shape for gate_up is [num_experts, 2*intermediate, hidden]
-                        # weight_update is [intermediate, hidden]
+                        vllm_size = vllm_updates_dict[target_name].shape[1] 
                         end = min(start + weight_update.shape[0], vllm_updates_dict[target_name].shape[1])
                         weight_shard = weight_update[:end-start]
                         vllm_updates_dict[target_name][expert_idx, start:end] += weight_shard
@@ -230,8 +232,7 @@ def map_peft_updates_to_vllm(peft_updates_dict, vllm_shapes_dict, device: torch.
                 elif "down_proj" in vllm_name:
                     target_name = re.sub(r"experts\.\d+\.down_proj", "experts.down_proj", vllm_name)
                     if target_name in vllm_updates_dict:
-                        vllm_size = vllm_updates_dict[target_name].shape[2] # [experts, hidden, inter] ? or [experts, out, in]
-                        # It's usually column parallel, but let's just add it entirely if it fits
+                        vllm_size = vllm_updates_dict[target_name].shape[2]
                         vllm_updates_dict[target_name][expert_idx] += weight_update
                     elif vllm_name in vllm_updates_dict:
                         vllm_updates_dict[vllm_name][expert_idx] += weight_update
@@ -776,7 +777,7 @@ class ESNcclLLM(LLM):
         for pop_idx in population_indices:
             adapter_path = os.path.join(self.lora_storage_path, f"pop_{pop_idx}")
 
-            # Try to create directory with robust error handling
+            # Try to create directory with error handling
             try:
                 os.makedirs(adapter_path, exist_ok=True)
             except (PermissionError, OSError) as e:
@@ -1084,15 +1085,15 @@ def launch_engines(num_engines, model_name, population_size, lora_r, tensor_para
             gpu_mem_util = 0.9
         elif "110b" in model_lower:
             max_num_seqs = 384
-            max_num_batched_tokens = 16 * 1024
+            max_num_batched_tokens = 4 * args.max_tokens
             gpu_mem_util = 0.9
         elif "72b" in model_lower:
             max_num_seqs = 384
-            max_num_batched_tokens = 16 * 1024
+            max_num_batched_tokens = 4 * args.max_tokens
             gpu_mem_util = 0.9
         else:
             max_num_seqs = 512
-            max_num_batched_tokens = 16 * 2048
+            max_num_batched_tokens = 8 * args.max_tokens
             gpu_mem_util = 0.9
 
         engines = [
