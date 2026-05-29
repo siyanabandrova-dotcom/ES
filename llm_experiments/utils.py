@@ -28,7 +28,7 @@ def safe_decode(tokens, tokenizer):
     except BaseException as e:
         return ""
 
-def build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature=1.0):
+def build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature=1.0, for_shard_map=False):
 
     def forward_and_sample(noiser_params, params, input_token, input_state, generation_key, iterinfo):
         print("compiling forward and sample")
@@ -52,8 +52,12 @@ def build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_
             tok, state, gen_key = forward_and_sample(noiser_params, params, true_input, state, gen_key, iterinfo)
             return (tok, state, gen_key), true_input
 
-        init_token = jax.lax.pvary(0, 'data')
-        init_state = jax.lax.pvary(MODEL.default_state(params, config), 'data')
+        if for_shard_map:
+            init_token = jax.lax.pcast(0, "data", to="varying")
+            init_state = jax.lax.pcast(MODEL.default_state(params, config), "data", to="varying")
+        else:
+            init_token = jnp.array(0, dtype=jnp.int32)
+            init_state = MODEL.default_state(params, config)
 
         _, out_tokens = jax.lax.scan(inner_scan, (init_token, init_state, start_gen_key), prompt)
         return out_tokens

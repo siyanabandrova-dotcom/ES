@@ -136,7 +136,8 @@ args.proc_id = jax.process_index()
 args.total_parallel_generations = total_num_devices * args.parallel_generations_per_gpu
 
 # args.lr = args.lr_scale * (args.sigma ** 2) * np.sqrt(args.total_parallel_generations)
-mesh = jax.make_mesh((len(jax.devices()),), ('data',))
+USE_SHARD_MAP = total_num_devices > 1
+mesh = jax.make_mesh((len(jax.devices()),), ("data",)) if USE_SHARD_MAP else None
 
 print()
 print("per-device generations is", args.parallel_generations_per_gpu)
@@ -152,26 +153,79 @@ args.prompts_per_epoch = args.total_parallel_generations // args.generations_per
 Task = all_tasks[args.task](tokenizer, legacy_tokenizer, args.generation_length)
 
 def replicate_matrix(x):
-    return jax.make_array_from_single_device_arrays(x.shape, NamedSharding(mesh, P()), [jax.device_put(x, d) for d in jax.local_devices()])
+    if not USE_SHARD_MAP:
+        return x
+    return jax.make_array_from_single_device_arrays(
+        x.shape, NamedSharding(mesh, P()), [jax.device_put(x, d) for d in jax.local_devices()]
+    )
+
+def _data_sharding(x):
+    # shard_map expects P('data', None) for 2D batch args, not P('data',)
+    if x.ndim == 1:
+        return NamedSharding(mesh, P("data"))
+    return NamedSharding(mesh, P("data", None))
+
+
+def shard_on_data(x):
+    if not USE_SHARD_MAP:
+        return jnp.asarray(x)
+    x = np.asarray(x)
+    sharding = _data_sharding(x)
+    arr = jax.make_array_from_single_device_arrays(
+        x.shape,
+        sharding,
+        [jax.device_put(x, d) for d in jax.local_devices()],
+    )
+    return jax.sharding.reshard(arr, sharding)
 
 params = jax.tree.map(replicate_matrix, params)
 frozen_noiser_params, noiser_params = NOISER.init_noiser(params, args.sigma, args.lr_scale, group_size=args.generations_per_prompt, freeze_nonlora=args.freeze_nonlora, noise_reuse=args.noise_reuse)
 base_evo_keys = simple_es_tree_key(params, base_model_key, scan_map)
 
 
-global_indices = replicate_matrix(np.arange(args.total_parallel_generations))
-all_thread_idxes = jax.device_put(global_indices, NamedSharding(mesh, P('data')))
+all_thread_idxes = shard_on_data(np.arange(args.total_parallel_generations))
+global_indices = all_thread_idxes
 
-_generate_thread = build_generate_thread(RWKV, NOISER, frozen_noiser_params, config, base_evo_keys, base_gen_key, args.temperature)
+_generate_thread = build_generate_thread(
+    RWKV,
+    NOISER,
+    frozen_noiser_params,
+    config,
+    base_evo_keys,
+    base_gen_key,
+    args.temperature,
+    for_shard_map=USE_SHARD_MAP,
+)
 
 print("Compiling generate batch")
 start_time = time.time()
-generate_batch = jax.jit(shard_map(
-    jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None)),
-    mesh=mesh,
-    in_specs=(P(), P(), P('data'), P('data'), P()),
-    out_specs=P('data')
-)).lower(noiser_params, params, jax.ShapeDtypeStruct((args.total_parallel_generations, args.generation_length), jnp.dtype('int32')), all_thread_idxes, 0).compile()
+if USE_SHARD_MAP:
+    generate_batch = jax.jit(
+        shard_map(
+            jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None)),
+            mesh=mesh,
+            in_specs=(P(), P(), P("data"), P("data"), P()),
+            out_specs=P("data"),
+        )
+    ).lower(
+        noiser_params,
+        params,
+        shard_on_data(np.zeros((args.total_parallel_generations, args.generation_length), dtype=np.int32)),
+        all_thread_idxes,
+        0,
+    ).compile()
+else:
+    generate_batch = jax.jit(
+        jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None))
+    ).lower(
+        noiser_params,
+        params,
+        jax.ShapeDtypeStruct(
+            (args.total_parallel_generations, args.generation_length), jnp.dtype("int32")
+        ),
+        jnp.arange(args.total_parallel_generations, dtype=jnp.int32),
+        0,
+    ).compile()
 print("Compile time", time.time() - start_time)
 print("memory info")
 print(generate_batch.memory_analysis())
@@ -179,7 +233,7 @@ print(generate_batch.memory_analysis())
 validate = build_validate(RWKV, config, params, base_evo_keys, base_valid_key, tokenizer, legacy_tokenizer, args, args.temperature)
 
 def _do_update(noiser_params, params, raw_scores, epoch_num):
-    iterinfos = (jnp.full(raw_scores.size, epoch_num, dtype=jnp.int32), global_indices)
+    iterinfos = (jnp.full_like(raw_scores, epoch_num, dtype=jnp.int32), global_indices)
 
     fitnesses = NOISER.convert_fitnesses(frozen_noiser_params, noiser_params, raw_scores)
     noiser_params, new_params = NOISER.do_updates(frozen_noiser_params, noiser_params, params, base_evo_keys, fitnesses, iterinfos, es_map)
@@ -190,12 +244,25 @@ def _do_update(noiser_params, params, raw_scores, epoch_num):
 print()
 print("Compiling do update")
 start_time = time.time()
-do_update = jax.jit(shard_map(
-    _do_update,
-    mesh=mesh,
-    in_specs=(P(), P(), P(), P()),
-    out_specs=(P(), P(), P())
-), donate_argnums=(0, 1)).lower(noiser_params, params, jnp.zeros(args.total_parallel_generations), 0).compile()
+if USE_SHARD_MAP:
+    do_update = jax.jit(
+        shard_map(
+            _do_update,
+            mesh=mesh,
+            in_specs=(P(), P(), P("data"), P()),
+            out_specs=(P(), P(), P()),
+        ),
+        donate_argnums=(0, 1),
+    ).lower(
+        noiser_params,
+        params,
+        shard_on_data(np.zeros(args.total_parallel_generations, dtype=np.float32)),
+        0,
+    ).compile()
+else:
+    do_update = jax.jit(_do_update, donate_argnums=(0, 1)).lower(
+        noiser_params, params, jnp.zeros(args.total_parallel_generations, dtype=jnp.float32), 0
+    ).compile()
 print("Compile time", time.time() - start_time)
 print("memory info")
 print(do_update.memory_analysis())
@@ -212,7 +279,12 @@ base_out_dir = Path(args.output_directory) if args.output_directory else (Path.c
 run_out_dir = base_out_dir / f"{experiment_id}"
 run_out_dir.mkdir(parents=True, exist_ok=True)
 
+fitness_csv_path = run_out_dir / "fitness.csv"
+validation_csv_path = run_out_dir / "validation.csv"
+figure_4b_path = run_out_dir / "figure_4b.png"
+
 print("Run name", full_name)
+print("Output directory:", run_out_dir)
 if args.track:
     if args.wandb_mode == "offline":
         os.environ["WANDB_MODE"] = "offline" 
@@ -236,18 +308,35 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
         validation_score = None
     # print("CURRENT MEMORY start of epoch", jax.local_devices()[0].memory_stats())
     start_time = time.time()
-    unique_indices = jax.device_put(replicate_matrix(jnp.arange(args.prompts_per_epoch)), NamedSharding(mesh, P('data'))) + epoch * args.prompts_per_epoch
-    indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)
-    unique_prompts = jax.make_array_from_single_device_arrays((args.prompts_per_epoch, args.generation_length), NamedSharding(mesh, P('data')), [Task.get_input(shard.data) for shard in unique_indices.addressable_shards])
-    # Task.get_input(unique_indices)
-    batch_prompts = jnp.repeat(unique_prompts, args.generations_per_prompt, axis=0)
+    if USE_SHARD_MAP:
+        unique_indices = (
+            jax.device_put(replicate_matrix(jnp.arange(args.prompts_per_epoch)), NamedSharding(mesh, P("data")))
+            + epoch * args.prompts_per_epoch
+        )
+        indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)
+
+        base_idx = epoch * args.prompts_per_epoch
+        unique_prompts_np = np.stack(
+            [np.asarray(Task.get_input(base_idx + i)) for i in range(args.prompts_per_epoch)]
+        )
+        batch_prompts = shard_on_data(
+            np.repeat(unique_prompts_np, args.generations_per_prompt, axis=0)
+        )
+    else:
+        unique_indices = jnp.arange(args.prompts_per_epoch, dtype=jnp.int32) + epoch * args.prompts_per_epoch
+        indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)
+        unique_prompts = Task.get_input(unique_indices)
+        batch_prompts = jnp.repeat(unique_prompts, args.generations_per_prompt, axis=0)
     prompt_processing_time = time.time() - start_time
 
     # print("CURRENT MEMORY start of batch", jax.local_devices()[0].memory_stats())
     start_time = time.time()
     if epoch == 0:
         print("generating batch")
-    output_batch = jax.block_until_ready(generate_batch(noiser_params, params, batch_prompts, all_thread_idxes, epoch))
+    thread_idxes = all_thread_idxes if USE_SHARD_MAP else jnp.arange(args.total_parallel_generations, dtype=jnp.int32)
+    output_batch = jax.block_until_ready(
+        generate_batch(noiser_params, params, batch_prompts, thread_idxes, epoch)
+    )
     token_generation_time = time.time() - start_time
 
     if (
@@ -259,8 +348,12 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
         # Take a small sample from the first local shard to minimize overhead
         K = min(8, args.total_parallel_generations)
 
-        local_gen = np.array(output_batch.addressable_shards[0].data)[:K]
-        local_prompts = np.array(batch_prompts.addressable_shards[0].data)[:K]
+        if USE_SHARD_MAP:
+            local_gen = np.array(output_batch.addressable_shards[0].data)[:K]
+            local_prompts = np.array(batch_prompts.addressable_shards[0].data)[:K]
+        else:
+            local_gen = np.array(output_batch)[:K]
+            local_prompts = np.array(batch_prompts)[:K]
 
         rows = []
         for i in range(local_gen.shape[0]):
@@ -283,10 +376,26 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
     if epoch == 0:
         print("calculating fitness")
     # local_output_scores = jax.block_until_ready(Task.get_batch_fitness(indices, output_batch))
-    _local_fitness = [jax.device_put(Task.get_batch_fitness(jax.device_put(shard1.data, jax.local_devices(backend='cpu')[0]), jax.device_put(shard2.data, jax.local_devices(backend='cpu')[0])), shard1.device) for shard1, shard2 in zip(indices.addressable_shards, output_batch.addressable_shards)]
-    # for x in _local_fitness:
-        # print(x.shape, x.device)
-    local_fitness = jax.make_array_from_single_device_arrays((args.total_parallel_generations,), NamedSharding(mesh, P('data')), _local_fitness)
+    if USE_SHARD_MAP:
+        _local_fitness = [
+            jax.device_put(
+                Task.get_batch_fitness(
+                    jax.device_put(shard1.data, jax.local_devices(backend="cpu")[0]),
+                    jax.device_put(shard2.data, jax.local_devices(backend="cpu")[0]),
+                ),
+                shard1.device,
+            )
+            for shard1, shard2 in zip(indices.addressable_shards, output_batch.addressable_shards)
+        ]
+        local_fitness = jax.make_array_from_single_device_arrays(
+            (args.total_parallel_generations,), NamedSharding(mesh, P("data")), _local_fitness
+        )
+    else:
+        idx_cpu = jax.device_put(indices, jax.local_devices(backend="cpu")[0])
+        out_cpu = jax.device_put(output_batch, jax.local_devices(backend="cpu")[0])
+        local_fitness = jax.device_put(
+            Task.get_batch_fitness(idx_cpu, out_cpu), jax.local_devices()[0]
+        )
 
     fitness_time = time.time() - start_time
 
@@ -294,7 +403,9 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
     start_time = time.time()
     if epoch == 0:
         print("gathering")
-    output_scores = process_allgather(local_fitness, True)
+    output_scores = process_allgather(local_fitness, True) if USE_SHARD_MAP else local_fitness
+    if USE_SHARD_MAP:
+        output_scores = jax.sharding.reshard(output_scores, NamedSharding(mesh, P("data")))
     gather_time = time.time() - start_time
 
 
@@ -333,6 +444,12 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
 
     if validation_score is not None:
         stats["validation_score"] = validation_score
+        elapsed = time.time() - run_start_time
+        with open(validation_csv_path, "a", encoding="utf-8") as f:
+            f.write(f"{epoch},{float(validation_score)},{elapsed:.3f}\n")
+
+    with open(fitness_csv_path, "a", encoding="utf-8") as f:
+        f.write(f"{epoch},{float(jnp.mean(output_scores))}\n")
     
     if args.track and jax.process_index() == 0:
         run.log(stats)
@@ -347,8 +464,24 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
 
     return noiser_params, params, true_train_fitness_sum
 
+with open(validation_csv_path, "w", encoding="utf-8") as f:
+    f.write("epoch,validation_score,time_seconds\n")
+
+run_start_time = time.time()
+
 for epoch in tqdm.trange(args.num_epochs):
     noiser_params, params, true_train_fitness_sum = single_epoch(noiser_params, params, true_train_fitness_sum, epoch)
+
+if validation_csv_path.exists() and validation_csv_path.stat().st_size > len("epoch,validation_score,time_seconds\n"):
+    from .plot_figure_4b import plot_figure_4b
+
+    plot_figure_4b(validation_csv_path, figure_4b_path)
+    print(f"Saved validation log: {validation_csv_path}")
+    print(f"Saved figure: {figure_4b_path}")
+    print(f"Saved figure: {figure_4b_path.with_suffix('.pdf')}")
+else:
+    print(f"No validation points logged (validate_every={args.validate_every}).")
+    print(f"Training fitness log: {fitness_csv_path}")
 
 if args.track:
     run.finish()

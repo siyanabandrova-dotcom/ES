@@ -1,0 +1,295 @@
+[1mdiff --git a/llm_experiments/general_do_evolution.py b/llm_experiments/general_do_evolution.py[m
+[1mindex 0ef4ca0..85f41d2 100644[m
+[1m--- a/llm_experiments/general_do_evolution.py[m
+[1m+++ b/llm_experiments/general_do_evolution.py[m
+[36m@@ -136,7 +136,8 @@[m [margs.proc_id = jax.process_index()[m
+ args.total_parallel_generations = total_num_devices * args.parallel_generations_per_gpu[m
+ [m
+ # args.lr = args.lr_scale * (args.sigma ** 2) * np.sqrt(args.total_parallel_generations)[m
+[31m-mesh = jax.make_mesh((len(jax.devices()),), ('data',))[m
+[32m+[m[32mUSE_SHARD_MAP = total_num_devices > 1[m
+[32m+[m[32mmesh = jax.make_mesh((len(jax.devices()),), ("data",)) if USE_SHARD_MAP else None[m
+ [m
+ print()[m
+ print("per-device generations is", args.parallel_generations_per_gpu)[m
+[36m@@ -152,26 +153,79 @@[m [margs.prompts_per_epoch = args.total_parallel_generations // args.generations_per[m
+ Task = all_tasks[args.task](tokenizer, legacy_tokenizer, args.generation_length)[m
+ [m
+ def replicate_matrix(x):[m
+[31m-    return jax.make_array_from_single_device_arrays(x.shape, NamedSharding(mesh, P()), [jax.device_put(x, d) for d in jax.local_devices()])[m
+[32m+[m[32m    if not USE_SHARD_MAP:[m
+[32m+[m[32m        return x[m
+[32m+[m[32m    return jax.make_array_from_single_device_arrays([m
+[32m+[m[32m        x.shape, NamedSharding(mesh, P()), [jax.device_put(x, d) for d in jax.local_devices()][m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32mdef _data_sharding(x):[m
+[32m+[m[32m    # shard_map expects P('data', None) for 2D batch args, not P('data',)[m
+[32m+[m[32m    if x.ndim == 1:[m
+[32m+[m[32m        return NamedSharding(mesh, P("data"))[m
+[32m+[m[32m    return NamedSharding(mesh, P("data", None))[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef shard_on_data(x):[m
+[32m+[m[32m    if not USE_SHARD_MAP:[m
+[32m+[m[32m        return jnp.asarray(x)[m
+[32m+[m[32m    x = np.asarray(x)[m
+[32m+[m[32m    sharding = _data_sharding(x)[m
+[32m+[m[32m    arr = jax.make_array_from_single_device_arrays([m
+[32m+[m[32m        x.shape,[m
+[32m+[m[32m        sharding,[m
+[32m+[m[32m        [jax.device_put(x, d) for d in jax.local_devices()],[m
+[32m+[m[32m    )[m
+[32m+[m[32m    return jax.sharding.reshard(arr, sharding)[m
+ [m
+ params = jax.tree.map(replicate_matrix, params)[m
+ frozen_noiser_params, noiser_params = NOISER.init_noiser(params, args.sigma, args.lr_scale, group_size=args.generations_per_prompt, freeze_nonlora=args.freeze_nonlora, noise_reuse=args.noise_reuse)[m
+ base_evo_keys = simple_es_tree_key(params, base_model_key, scan_map)[m
+ [m
+ [m
+[31m-global_indices = replicate_matrix(np.arange(args.total_parallel_generations))[m
+[31m-all_thread_idxes = jax.device_put(global_indices, NamedSharding(mesh, P('data')))[m
+[32m+[m[32mall_thread_idxes = shard_on_data(np.arange(args.total_parallel_generations))[m
+[32m+[m[32mglobal_indices = all_thread_idxes[m
+ [m
+[31m-_generate_thread = build_generate_thread(RWKV, NOISER, frozen_noiser_params, config, base_evo_keys, base_gen_key, args.temperature)[m
+[32m+[m[32m_generate_thread = build_generate_thread([m
+[32m+[m[32m    RWKV,[m
+[32m+[m[32m    NOISER,[m
+[32m+[m[32m    frozen_noiser_params,[m
+[32m+[m[32m    config,[m
+[32m+[m[32m    base_evo_keys,[m
+[32m+[m[32m    base_gen_key,[m
+[32m+[m[32m    args.temperature,[m
+[32m+[m[32m    for_shard_map=USE_SHARD_MAP,[m
+[32m+[m[32m)[m
+ [m
+ print("Compiling generate batch")[m
+ start_time = time.time()[m
+[31m-generate_batch = jax.jit(shard_map([m
+[31m-    jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None)),[m
+[31m-    mesh=mesh,[m
+[31m-    in_specs=(P(), P(), P('data'), P('data'), P()),[m
+[31m-    out_specs=P('data')[m
+[31m-)).lower(noiser_params, params, jax.ShapeDtypeStruct((args.total_parallel_generations, args.generation_length), jnp.dtype('int32')), all_thread_idxes, 0).compile()[m
+[32m+[m[32mif USE_SHARD_MAP:[m
+[32m+[m[32m    generate_batch = jax.jit([m
+[32m+[m[32m        shard_map([m
+[32m+[m[32m            jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None)),[m
+[32m+[m[32m            mesh=mesh,[m
+[32m+[m[32m            in_specs=(P(), P(), P("data"), P("data"), P()),[m
+[32m+[m[32m            out_specs=P("data"),[m
+[32m+[m[32m        )[m
+[32m+[m[32m    ).lower([m
+[32m+[m[32m        noiser_params,[m
+[32m+[m[32m        params,[m
+[32m+[m[32m        shard_on_data(np.zeros((args.total_parallel_generations, args.generation_length), dtype=np.int32)),[m
+[32m+[m[32m        all_thread_idxes,[m
+[32m+[m[32m        0,[m
+[32m+[m[32m    ).compile()[m
+[32m+[m[32melse:[m
+[32m+[m[32m    generate_batch = jax.jit([m
+[32m+[m[32m        jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None))[m
+[32m+[m[32m    ).lower([m
+[32m+[m[32m        noiser_params,[m
+[32m+[m[32m        params,[m
+[32m+[m[32m        jax.ShapeDtypeStruct([m
+[32m+[m[32m            (args.total_parallel_generations, args.generation_length), jnp.dtype("int32")[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        jnp.arange(args.total_parallel_generations, dtype=jnp.int32),[m
+[32m+[m[32m        0,[m
+[32m+[m[32m    ).compile()[m
+ print("Compile time", time.time() - start_time)[m
+ print("memory info")[m
+ print(generate_batch.memory_analysis())[m
+[36m@@ -179,7 +233,7 @@[m [mprint(generate_batch.memory_analysis())[m
+ validate = build_validate(RWKV, config, params, base_evo_keys, base_valid_key, tokenizer, legacy_tokenizer, args, args.temperature)[m
+ [m
+ def _do_update(noiser_params, params, raw_scores, epoch_num):[m
+[31m-    iterinfos = (jnp.full(raw_scores.size, epoch_num, dtype=jnp.int32), global_indices)[m
+[32m+[m[32m    iterinfos = (jnp.full_like(raw_scores, epoch_num, dtype=jnp.int32), global_indices)[m
+ [m
+     fitnesses = NOISER.convert_fitnesses(frozen_noiser_params, noiser_params, raw_scores)[m
+     noiser_params, new_params = NOISER.do_updates(frozen_noiser_params, noiser_params, params, base_evo_keys, fitnesses, iterinfos, es_map)[m
+[36m@@ -190,12 +244,25 @@[m [mdef _do_update(noiser_params, params, raw_scores, epoch_num):[m
+ print()[m
+ print("Compiling do update")[m
+ start_time = time.time()[m
+[31m-do_update = jax.jit(shard_map([m
+[31m-    _do_update,[m
+[31m-    mesh=mesh,[m
+[31m-    in_specs=(P(), P(), P(), P()),[m
+[31m-    out_specs=(P(), P(), P())[m
+[31m-), donate_argnums=(0, 1)).lower(noiser_params, params, jnp.zeros(args.total_parallel_generations), 0).compile()[m
+[32m+[m[32mif USE_SHARD_MAP:[m
+[32m+[m[32m    do_update = jax.jit([m
+[32m+[m[32m        shard_map([m
+[32m+[m[32m            _do_update,[m
+[32m+[m[32m            mesh=mesh,[m
+[32m+[m[32m            in_specs=(P(), P(), P("data"), P()),[m
+[32m+[m[32m            out_specs=(P(), P(), P()),[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        donate_argnums=(0, 1),[m
+[32m+[m[32m    ).lower([m
+[32m+[m[32m        noiser_params,[m
+[32m+[m[32m        params,[m
+[32m+[m[32m        shard_on_data(np.zeros(args.total_parallel_generations, dtype=np.float32)),[m
+[32m+[m[32m        0,[m
+[32m+[m[32m    ).compile()[m
+[32m+[m[32melse:[m
+[32m+[m[32m    do_update = jax.jit(_do_update, donate_argnums=(0, 1)).lower([m
+[32m+[m[32m        noiser_params, params, jnp.zeros(args.total_parallel_generations, dtype=jnp.float32), 0[m
+[32m+[m[32m    ).compile()[m
+ print("Compile time", time.time() - start_time)[m
+ print("memory info")[m
+ print(do_update.memory_analysis())[m
+[36m@@ -212,7 +279,12 @@[m [mbase_out_dir = Path(args.output_directory) if args.output_directory else (Path.c[m
+ run_out_dir = base_out_dir / f"{experiment_id}"[m
+ run_out_dir.mkdir(parents=True, exist_ok=True)[m
+ [m
+[32m+[m[32mfitness_csv_path = run_out_dir / "fitness.csv"[m
+[32m+[m[32mvalidation_csv_path = run_out_dir / "validation.csv"[m
+[32m+[m[32mfigure_4b_path = run_out_dir / "figure_4b.png"[m
+[32m+[m
+ print("Run name", full_name)[m
+[32m+[m[32mprint("Output directory:", run_out_dir)[m
+ if args.track:[m
+     if args.wandb_mode == "offline":[m
+         os.environ["WANDB_MODE"] = "offline" [m
+[36m@@ -236,18 +308,35 @@[m [mdef single_epoch(noiser_params, params, true_train_fitness_sum, epoch):[m
+         validation_score = None[m
+     # print("CURRENT MEMORY start of epoch", jax.local_devices()[0].memory_stats())[m
+     start_time = time.time()[m
+[31m-    unique_indices = jax.device_put(replicate_matrix(jnp.arange(args.prompts_per_epoch)), NamedSharding(mesh, P('data'))) + epoch * args.prompts_per_epoch[m
+[31m-    indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)[m
+[31m-    unique_prompts = jax.make_array_from_single_device_arrays((args.prompts_per_epoch, args.generation_length), NamedSharding(mesh, P('data')), [Task.get_input(shard.data) for shard in unique_indices.addressable_shards])[m
+[31m-    # Task.get_input(unique_indices)[m
+[31m-    batch_prompts = jnp.repeat(unique_prompts, args.generations_per_prompt, axis=0)[m
+[32m+[m[32m    if USE_SHARD_MAP:[m
+[32m+[m[32m        unique_indices = ([m
+[32m+[m[32m            jax.device_put(replicate_matrix(jnp.arange(args.prompts_per_epoch)), NamedSharding(mesh, P("data")))[m
+[32m+[m[32m            + epoch * args.prompts_per_epoch[m
+[32m+[m[32m        )[m
+[32m+[m[32m        indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)[m
+[32m+[m
+[32m+[m[32m        base_idx = epoch * args.prompts_per_epoch[m
+[32m+[m[32m        unique_prompts_np = np.stack([m
+[32m+[m[32m            [np.asarray(Task.get_input(base_idx + i)) for i in range(args.prompts_per_epoch)][m
+[32m+[m[32m        )[m
+[32m+[m[32m        batch_prompts = shard_on_data([m
+[32m+[m[32m            np.repeat(unique_prompts_np, args.generations_per_prompt, axis=0)[m
+[32m+[m[32m        )[m
+[32m+[m[32m    else:[m
+[32m+[m[32m        unique_indices = jnp.arange(args.prompts_per_epoch, dtype=jnp.int32) + epoch * args.prompts_per_epoch[m
+[32m+[m[32m        indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)[m
+[32m+[m[32m        unique_prompts = Task.get_input(unique_indices)[m
+[32m+[m[32m        batch_prompts = jnp.repeat(unique_prompts, args.generations_per_prompt, axis=0)[m
+     prompt_processing_time = time.time() - start_time[m
+ [m
+     # print("CURRENT MEMORY start of batch", jax.local_devices()[0].memory_stats())[m
+     start_time = time.time()[m
+     if epoch == 0:[m
+         print("generating batch")[m
+[31m-    output_batch = jax.block_until_ready(generate_batch(noiser_params, params, batch_prompts, all_thread_idxes, epoch))[m
+[32m+[m[32m    thread_idxes = all_thread_idxes if USE_SHARD_MAP else jnp.arange(args.total_parallel_generations, dtype=jnp.int32)[m
+[32m+[m[32m    output_batch = jax.block_until_ready([m
+[32m+[m[32m        generate_batch(noiser_params, params, batch_prompts, thread_idxes, epoch)[m
+[32m+[m[32m    )[m
+     token_generation_time = time.time() - start_time[m
+ [m
+     if ([m
+[36m@@ -259,8 +348,12 @@[m [mdef single_epoch(noiser_params, params, true_train_fitness_sum, epoch):[m
+         # Take a small sample from the first local shard to minimize overhead[m
+         K = min(8, args.total_parallel_generations)[m
+ [m
+[31m-        local_gen = np.array(output_batch.addressable_shards[0].data)[:K][m
+[31m-        local_prompts = np.array(batch_prompts.addressable_shards[0].data)[:K][m
+[32m+[m[32m        if USE_SHARD_MAP:[m
+[32m+[m[32m            local_gen = np.array(output_batch.addressable_shards[0].data)[:K][m
+[32m+[m[32m            local_prompts = np.array(batch_prompts.addressable_shards[0].data)[:K][m
+[32m+[m[32m        else:[m
+[32m+[m[32m            local_gen = np.array(output_batch)[:K][m
+[32m+[m[32m            local_prompts = np.array(batch_prompts)[:K][m
+ [m
+         rows = [][m
+         for i in range(local_gen.shape[0]):[m
+[36m@@ -283,10 +376,26 @@[m [mdef single_epoch(noiser_params, params, true_train_fitness_sum, epoch):[m
+     if epoch == 0:[m
+         print("calculating fitness")[m
+     # local_output_scores = jax.block_until_ready(Task.get_batch_fitness(indices, output_batch))[m
+[31m-    _local_fitness = [jax.device_put(Task.get_batch_fitness(jax.device_put(shard1.data, jax.local_devices(backend='cpu')[0]), jax.device_put(shard2.data, jax.local_devices(backend='cpu')[0])), shard1.device) for shard1, shard2 in zip(indices.addressable_shards, output_batch.addressable_shards)][m
+[31m-    # for x in _local_fitness:[m
+[31m-        # print(x.shape, x.device)[m
+[31m-    local_fitness = jax.make_array_from_single_device_arrays((args.total_parallel_generations,), NamedSharding(mesh, P('data')), _local_fitness)[m
+[32m+[m[32m    if USE_SHARD_MAP:[m
+[32m+[m[32m        _local_fitness = [[m
+[32m+[m[32m            jax.device_put([m
+[32m+[m[32m                Task.get_batch_fitness([m
+[32m+[m[32m                    jax.device_put(shard1.data, jax.local_devices(backend="cpu")[0]),[m
+[32m+[m[32m                    jax.device_put(shard2.data, jax.local_devices(backend="cpu")[0]),[m
+[32m+[m[32m                ),[m
+[32m+[m[32m                shard1.device,[m
+[32m+[m[32m            )[m
+[32m+[m[32m            for shard1, shard2 in zip(indices.addressable_shards, output_batch.addressable_shards)[m
+[32m+[m[32m        ][m
+[32m+[m[32m        local_fitness = jax.make_array_from_single_device_arrays([m
+[32m+[m[32m            (args.total_parallel_generations,), NamedSharding(mesh, P("data")), _local_fitness[m
+[32m+[m[32m        )[m
+[32m+[m[32m    else:[m
+[32m+[m[32m        idx_cpu = jax.device_put(indices, jax.local_devices(backend="cpu")[0])[m
+[32m+[m[32m        out_cpu = jax.device_put(output_batch, jax.local_devices(backend="cpu")[0])[m
+[32m+[m[32m        local_fitness = jax.device_put([m
+[32m+[m[32m            Task.get_batch_fitness(idx_cpu, out_cpu), jax.local_devices()[0][m
+[32m+[m[32m        )[m
+ [m
+     fitness_time = time.time() - start_time[m
+ [m
+[36m@@ -294,7 +403,9 @@[m [mdef single_epoch(noiser_params, params, true_train_fitness_sum, epoch):[m
+     start_time = time.time()[m
+     if epoch == 0:[m
+         print("gathering")[m
+[31m-    output_scores = process_allgather(local_fitness, True)[m
+[32m+[m[32m    output_scores = process_allgather(local_fitness, True) if USE_SHARD_MAP else local_fitness[m
+[32m+[m[32m    if USE_SHARD_MAP:[m
+[32m+[m[32m        output_scores = jax.sharding.reshard(output_scores, NamedSharding(mesh, P("data")))[m
+     gather_time = time.time() - start_time[m
+ [m
+ [m
+[36m@@ -333,6 +444,12 @@[m [mdef single_epoch(noiser_params, params, true_train_fitness_sum, epoch):[m
+ [m
+     if validation_score is not None:[m
+         stats["validation_score"] = validation_score[m
+[32m+[m[32m        elapsed = time.time() - run_start_time[m
+[32m+[m[32m        with open(validation_csv_path, "a", encoding="utf-8") as f:[m
+[32m+[m[32m            f.write(f"{epoch},{float(validation_score)},{elapsed:.3f}\n")[m
+[32m+[m
+[32m+[m[32m    with open(fitness_csv_path, "a", encoding="utf-8") as f:[m
+[32m+[m[32m        f.write(f"{epoch},{float(jnp.mean(output_scores))}\n")[m
+     [m
+     if args.track and jax.process_index() == 0:[m
+         run.log(stats)[m
+[36m@@ -347,8 +464,24 @@[m [mdef single_epoch(noiser_params, params, true_train_fitness_sum, epoch):[m
+ [m
+     return noiser_params, params, true_train_fitness_sum[m
+ [m
+[32m+[m[32mwith open(validation_csv_path, "w", encoding="utf-8") as f:[m
+[32m+[m[32m    f.write("epoch,validation_score,time_seconds\n")[m
+[32m+[m
+[32m+[m[32mrun_start_time = time.time()[m
+[32m+[m
+ for epoch in tqdm.trange(args.num_epochs):[m
+     noiser_params, params, true_train_fitness_sum = single_epoch(noiser_params, params, true_train_fitness_sum, epoch)[m
+ [m
+[32m+[m[32mif validation_csv_path.exists() and validation_csv_path.stat().st_size > len("epoch,validation_score,time_seconds\n"):[m
+[32m+[m[32m    from .plot_figure_4b import plot_figure_4b[m
+[32m+[m
+[32m+[m[32m    plot_figure_4b(validation_csv_path, figure_4b_path)[m
+[32m+[m[32m    print(f"Saved validation log: {validation_csv_path}")[m
+[32m+[m[32m    print(f"Saved figure: {figure_4b_path}")[m
+[32m+[m[32m    print(f"Saved figure: {figure_4b_path.with_suffix('.pdf')}")[m
+[32m+[m[32melse:[m
+[32m+[m[32m    print(f"No validation points logged (validate_every={args.validate_every}).")[m
+[32m+[m[32m    print(f"Training fitness log: {fitness_csv_path}")[m
+[32m+[m
+ if args.track:[m
+     run.finish()[m
