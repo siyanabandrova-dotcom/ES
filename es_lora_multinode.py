@@ -11,7 +11,7 @@ import shutil
 import signal
 import sys
 import time
-from dataclasses import dataclass
+from args_config import Args
 import copy
 import math
 
@@ -41,88 +41,6 @@ EXPERIMENT_DIR = os.path.expandvars("$SCRATCH/for_es_lora/experiments")
 # Use SLURM_JOB_ID to make path unique per job, avoiding conflicts from previous runs
 SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
 LORA_POPULATION_PATH = f"/dev/shm/es_lora_population_async_{SLURM_JOB_ID}"
-
-@dataclass
-class Args:
-    """ES Fine-tuning for Countdown Task with multi-engine NCCL sync and LoRA population"""
-    model_name: str = "Qwen/Qwen2-0.5B" 
-    # --- ES Hyperparameters ---
-    sigma: float = 0.001
-    population_size: int = 128
-    num_iterations: int = 300
-    max_tokens: int = 1024
-    temperature: float = 0.0
-    samples_per_prompt: int = 1
-    task: str = "zeros"  # Options: "zeros", "countdown", "math:deepscaler40k", ...
-    prompt_batch_size: int = 2
-    pass_at_k: bool = False
-    normalize_with_std: bool = False
-    scale_lr_in_grad: bool = False
-
-    # --- LoRA Config ---
-    lora_r: int = 4
-    lora_alpha: int = None
-    steps_per_adapter: int = 4
-    learning_rate: float = 0.001
-
-    # --- Runtime Config ---
-    num_gpus: int = None
-    num_engines: int = None
-    tensor_parallel_size: int = 1  # Number of GPUs per engine for tensor parallelism
-    verbose: bool = True
-    base_seed: int = 0
-    sub_dataset_size: int = None
-    steps_per_eval: int = 10 # -1 to disable
-    eval_batch_size: int = 128
-    es_update_chunk_size: int = None  # Auto-select based on lora_r if None
-
-    # --- WandB ---
-    use_wandb: bool = False
-    wandb_project: str = "hyperscalees-vllm"
-    name_prefix: str = f"debug"
-
-    # --- Checkpointing ---
-    save_freq: int = 50  # None: no saving, -1: saves at last step
-    checkpoint_dir: str = None  # If None, will use EXPERIMENT_DIR/run_name/checkpoints
-    resume_from: str = None  # Path to checkpoint to resume from
-
-    def __post_init__(self):
-        if self.lora_alpha is None:
-            self.lora_alpha = self.lora_r
-
-        # Auto-configure tensor_parallel_size based on model name if not explicitly set
-        # Only apply auto-config if TP was not set via command line (still equals default of 1)
-        if self.tensor_parallel_size == 1:
-            # Dictionary of models that benefit from tensor parallelism
-            # Maps model name patterns to recommended TP size
-            TP_CONFIG = {
-                # Qwen 1.5
-                "Qwen/Qwen1.5-110B": 4,
-                "Qwen/Qwen1.5-110B-Chat": 4,
-                # Qwen 2.5
-                "Qwen/Qwen2.5-1.5B": 1,
-                "Qwen/Qwen2.5-14B": 2,
-                "Qwen/Qwen2.5-32B": 4,
-                "Qwen/Qwen2.5-32B-Instruct": 4,
-                "Qwen/Qwen2.5-72B": 4,
-                "Qwen/Qwen2.5-72B-Instruct": 4,
-                # Qwen 3
-                "Qwen/Qwen3-1.7B": 1,
-                "Qwen/Qwen3-4B": 1,
-                "Qwen/Qwen3-4B-Base": 1,
-                "Qwen/Qwen3-8B": 1,
-                "Qwen/Qwen3-30B": 2,
-                "Qwen/Qwen3-30B-Base": 2,
-                "Qwen/Qwen3-32B": 4,
-            }
-
-            # Check if model_name matches any pattern
-            for model_pattern, tp_size in TP_CONFIG.items():
-                if model_pattern in self.model_name:
-                    self.tensor_parallel_size = tp_size
-                    print(f"Auto-configured tensor_parallel_size={tp_size} for model {self.model_name}", flush=True)
-                    break
-
 
 LORA_TARGET_MODULES = [
     "q_proj", "k_proj", "v_proj", "o_proj",
