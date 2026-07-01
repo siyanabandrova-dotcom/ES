@@ -58,15 +58,76 @@ def get_padded_prompt(single_prompt, generation_length):
 
 
 def strip_thoughts(txt: str) -> str:
+    boundary_markers = ("Now produce output:", "###")
+    for marker in boundary_markers:
+        if marker in txt:
+            txt = txt.split(marker, 1)[1]
+            break
     i = txt.find("</think>")
-    return txt[i + len("</think>"):] if i != -1 else txt
+    if i != -1:
+        txt = txt[i + len("</think>"):]
+    answer_marker = "Answer:"
+    if answer_marker in txt:
+        txt = txt.split(answer_marker, 1)[1]
+        # Take the first non-empty line after the marker to avoid explanations
+        for line in txt.splitlines():
+            line = line.strip()
+            if line:
+                return line
+        return ""
+    lines = [line.strip() for line in txt.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith(("User:", "Assistant:")):
+            line = line.split(":", 1)[1].strip()
+        if not line:
+            continue
+        if any(ch.isdigit() for ch in line):
+            return line
+    return txt
+
+
+def normalize_answer_text(text: str) -> str:
+    """Normalize unicode fractions/symbols to ASCII for parsing."""
+    if not text:
+        return text
+    replacements = {
+        "⅓": "1/3",
+        "⅔": "2/3",
+        "¼": "1/4",
+        "½": "1/2",
+        "¾": "3/4",
+        "⅕": "1/5",
+        "⅖": "2/5",
+        "⅗": "3/5",
+        "⅘": "4/5",
+        "⅙": "1/6",
+        "⅚": "5/6",
+        "⅛": "1/8",
+        "⅜": "3/8",
+        "⅝": "5/8",
+        "⅞": "7/8",
+        "÷": "/",
+        "×": "*",
+        "⌊": "",
+        "⌋": "",
+        "=": "",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return text.strip()
 
 
 def make_rg_prompt(question: str) -> str:
     return (
         "User: You are a helpful assistant. You first think about the reasoning process "
-        f"in your mind and then provide the user with the answer. Question: {question}. "
-        "Assistant: <think"
+        f"in your mind and then provide the user with the answer. Question: {question}.\n"
+        "Assistant:\n"
+        "Return ONLY the final expression.\n"
+        "Do not repeat the question.\n"
+        "Use all the numbers exactly once.\n"
+        "Start immediately with:\n"
+        "###\n"
+        "Now produce output:\n"
     )
 
 
@@ -276,7 +337,7 @@ class ReasoningGymTrain(BanditTask):
     def get_input(self, indices):
         return jnp.array([
             get_padded_prompt(
-                self.encoding_tokenizer.encode(
+                self.decoding_tokenizer.encode(
                     make_rg_prompt(self.dataset[i.item() % len(self.dataset)]["question"])
                 ),
                 self.max_num_steps,
@@ -291,6 +352,7 @@ class ReasoningGymTrain(BanditTask):
         for idx, tok_seq in zip(indices, np_full):
             gen_ans = safe_decode(tok_seq, self.decoding_tokenizer)
             gen_ans = strip_thoughts(gen_ans).strip()
+            gen_ans = normalize_answer_text(gen_ans)
             if len(gen_ans) == 0:
                 reward = 0.0
             else:

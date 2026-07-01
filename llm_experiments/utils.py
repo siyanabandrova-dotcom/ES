@@ -34,10 +34,13 @@ def build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_
         print("compiling forward and sample")
         gen_key, _gen_key = jax.random.split(generation_key)
         generated_outs, generated_state = MODEL.forward(NOISER, frozen_noiser_params, noiser_params, config, params, base_evo_keys, iterinfo, input_token, input_state)
+        logits = generated_outs[-1]
+        # Avoid sampling EOS (token 0) to prevent empty continuations.
+        logits = logits.at[0].set(-jnp.inf)
         if temperature != 0.0:
-            sampled_tok = jax.random.categorical(_gen_key, generated_outs[-1] / temperature)
+            sampled_tok = jax.random.categorical(_gen_key, logits / temperature)
         else:
-            sampled_tok = jnp.argmax(generated_outs[-1])
+            sampled_tok = jnp.argmax(logits)
         return sampled_tok, generated_state, gen_key
     
     def generate_thread(noiser_params, params, prompt, thread_idx, epoch_num):
