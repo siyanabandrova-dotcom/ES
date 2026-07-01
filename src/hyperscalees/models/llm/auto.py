@@ -166,7 +166,11 @@ def load(path: str | Path) -> any:
         raise ValueError(f'Not a file: {path}')
     if path.suffix != suffix:
         raise ValueError(f'Not a {suffix} file: {path}')
-    with jax.default_device(jax.local_devices(backend="cpu")[0]):
+    try:
+        load_device = jax.local_devices(backend="cpu")[0]
+    except RuntimeError:
+        load_device = jax.devices()[0]
+    with jax.default_device(load_device):
         with open(path, 'rb') as file:
             data = pickle.load(file)
     return data

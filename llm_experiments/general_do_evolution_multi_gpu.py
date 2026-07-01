@@ -162,6 +162,7 @@ print("process id", jax.process_index())
 args.proc_id = jax.process_index()
 args.total_parallel_generations = total_num_devices * args.parallel_generations_per_gpu
 args.total_validation_generations = total_num_devices * args.parallel_validations_per_gpu
+use_shard_map = total_num_devices > 1
 
 # args.lr = args.lr_scale * (args.sigma ** 2) * np.sqrt(args.total_parallel_generations)
 mesh = jax.make_mesh((len(jax.devices()),), ('data',))
@@ -202,19 +203,32 @@ base_evo_keys = simple_es_tree_key(params, base_model_key, scan_map)
 # global_indices = replicate_matrix(np.arange(args.total_parallel_generations))
 global_indices = replicate_matrix(np.arange(args.total_parallel_generations)) % args.generations_per_prompt
 global_val_indices = replicate_matrix(np.arange(args.total_validation_generations))
-all_thread_idxes = jax.device_put(global_indices, NamedSharding(mesh, P('data')))
-all_thread_val_idxes = jax.device_put(global_val_indices, NamedSharding(mesh, P('data')))
+if use_shard_map:
+    all_thread_idxes = jax.device_put(global_indices, NamedSharding(mesh, P('data')))
+    all_thread_val_idxes = jax.device_put(global_val_indices, NamedSharding(mesh, P('data')))
+else:
+    all_thread_idxes = global_indices
+    all_thread_val_idxes = global_val_indices
 
 _generate_thread = build_generate_thread(RWKV, NOISER, frozen_noiser_params, config, base_evo_keys, base_gen_key, args.temperature)
 
 print("Compiling generate batch")
 start_time = time.time()
-generate_batch = jax.jit(shard_map(
-    jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None)),
-    mesh=mesh,
-    in_specs=(P(), P(), P('data'), P('data'), P()),
-    out_specs=P('data')
-)).lower(noiser_params, params, jax.ShapeDtypeStruct((args.total_parallel_generations, args.generation_length), jnp.dtype('int32')), all_thread_idxes, 0).compile()
+generate_batch_fn = jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None))
+if use_shard_map:
+    generate_batch_fn = shard_map(
+        generate_batch_fn,
+        mesh=mesh,
+        in_specs=(P(), P(), P('data'), P('data'), P()),
+        out_specs=P('data'),
+    )
+generate_batch = jax.jit(generate_batch_fn).lower(
+    noiser_params,
+    params,
+    jax.ShapeDtypeStruct((args.total_parallel_generations, args.generation_length), jnp.dtype('int32')),
+    all_thread_idxes,
+    0,
+).compile()
 print("Compile time", time.time() - start_time)
 print("memory info")
 print(generate_batch.memory_analysis())
@@ -225,12 +239,21 @@ _generate_thread_val = build_generate_thread(
 )
 print("Compiling generate validation batch")
 start_time = time.time()
-generate_val_batch = jax.jit(shard_map(
-    jax.vmap(_generate_thread_val, in_axes=(None, None, 0, 0, None)),
-    mesh=mesh,
-    in_specs=(P(), P(), P('data'), P('data'), P()),
-    out_specs=P('data')
-)).lower(noiser_params, params, jax.ShapeDtypeStruct((args.total_validation_generations, args.generation_length), jnp.dtype('int32')), all_thread_val_idxes, 0).compile()
+generate_val_batch_fn = jax.vmap(_generate_thread_val, in_axes=(None, None, 0, 0, None))
+if use_shard_map:
+    generate_val_batch_fn = shard_map(
+        generate_val_batch_fn,
+        mesh=mesh,
+        in_specs=(P(), P(), P('data'), P('data'), P()),
+        out_specs=P('data'),
+    )
+generate_val_batch = jax.jit(generate_val_batch_fn).lower(
+    noiser_params,
+    params,
+    jax.ShapeDtypeStruct((args.total_validation_generations, args.generation_length), jnp.dtype('int32')),
+    all_thread_val_idxes,
+    0,
+).compile()
 print("Compile time", time.time() - start_time)
 print("memory info")
 print(generate_val_batch.memory_analysis())
@@ -250,12 +273,21 @@ def _do_update(noiser_params, params, raw_scores, epoch_num, dir_indices):
 print()
 print("Compiling do update")
 start_time = time.time()
-do_update = jax.jit(shard_map(
-    _do_update,
-    mesh=mesh,
-    in_specs=(P(), P(), P(), P(), P()),
-    out_specs=(P(), P(), P())
-), donate_argnums=(0, 1)).lower(noiser_params, params, jnp.zeros(args.generations_per_prompt), 0, dir_indices).compile()
+do_update_fn = _do_update
+if use_shard_map:
+    do_update_fn = shard_map(
+        do_update_fn,
+        mesh=mesh,
+        in_specs=(P(), P(), P(), P(), P()),
+        out_specs=(P(), P(), P()),
+    )
+do_update = jax.jit(do_update_fn, donate_argnums=(0, 1)).lower(
+    noiser_params,
+    params,
+    jnp.zeros(args.generations_per_prompt),
+    0,
+    dir_indices,
+).compile()
 print("Compile time", time.time() - start_time)
 print("memory info")
 print(do_update.memory_analysis())
@@ -335,7 +367,7 @@ def validate(noiser_params, params, epoch):
         val_unique_prompts = jax.make_array_from_single_device_arrays(
             (args.total_validation_generations, args.generation_length),
             NamedSharding(mesh, P('data')),
-            [ValTask.get_input(shard.data) for shard in val_unique_indices.addressable_shards]
+            [ValTask.get_input(np.array(shard.data)) for shard in val_unique_indices.addressable_shards]
         )
 
         # Generate on devices
@@ -344,16 +376,12 @@ def validate(noiser_params, params, epoch):
         )
 
         # Compute fitness per shard on host CPU, then place back onto the shard device
-        _local_fitness = [
-            jax.device_put(
-                ValTask.get_batch_fitness(
-                    jax.device_put(idx_shard.data, jax.local_devices(backend='cpu')[0]),
-                    jax.device_put(out_shard.data, jax.local_devices(backend='cpu')[0])
-                ),
-                out_shard.device
-            )
-            for idx_shard, out_shard in zip(val_unique_indices.addressable_shards, val_outputs.addressable_shards)
-        ]
+        _local_fitness = []
+        for idx_shard, out_shard in zip(val_unique_indices.addressable_shards, val_outputs.addressable_shards):
+            idx_host = np.array(idx_shard.data)
+            out_host = np.array(out_shard.data)
+            fitness_host = ValTask.get_batch_fitness(idx_host, out_host)
+            _local_fitness.append(jax.device_put(fitness_host, out_shard.device))
         local_fitness = jax.make_array_from_single_device_arrays(
             (args.total_validation_generations,), NamedSharding(mesh, P('data')), _local_fitness
         )
@@ -378,7 +406,11 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
     start_time = time.time()
     unique_indices = jax.device_put(replicate_matrix(jnp.arange(args.prompts_per_epoch)), NamedSharding(mesh, P('data'))) + epoch * args.prompts_per_epoch
     indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)
-    unique_prompts = jax.make_array_from_single_device_arrays((args.prompts_per_epoch, args.generation_length), NamedSharding(mesh, P('data')), [Task.get_input(shard.data) for shard in unique_indices.addressable_shards])
+    unique_prompts = jax.make_array_from_single_device_arrays(
+        (args.prompts_per_epoch, args.generation_length),
+        NamedSharding(mesh, P('data')),
+        [Task.get_input(np.array(shard.data)) for shard in unique_indices.addressable_shards],
+    )
     # Task.get_input(unique_indices)
     batch_prompts = jnp.repeat(unique_prompts, args.generations_per_prompt, axis=0)
     prompt_processing_time = time.time() - start_time
@@ -428,7 +460,12 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
         print("calculating fitness")
 
     # local_output_scores = jax.block_until_ready(Task.get_batch_fitness(indices, output_batch))
-    _local_fitness = [jax.device_put(Task.get_batch_fitness(jax.device_put(shard1.data, jax.local_devices(backend='cpu')[0]), jax.device_put(shard2.data, jax.local_devices(backend='cpu')[0])), shard1.device) for shard1, shard2 in zip(indices.addressable_shards, output_batch.addressable_shards)]
+    _local_fitness = []
+    for shard1, shard2 in zip(indices.addressable_shards, output_batch.addressable_shards):
+        idx_host = np.array(shard1.data)
+        out_host = np.array(shard2.data)
+        fitness_host = Task.get_batch_fitness(idx_host, out_host)
+        _local_fitness.append(jax.device_put(fitness_host, shard1.device))
     # for x in _local_fitness:
         # print(x.shape, x.device)
     local_fitness = jax.block_until_ready(jax.make_array_from_single_device_arrays((args.total_parallel_generations,), NamedSharding(mesh, P('data')), _local_fitness))
