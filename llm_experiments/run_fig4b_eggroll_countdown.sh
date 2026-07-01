@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Figure 4b EGGROLL countdown run (RWKV 7g1.5B, single GPU).
-# Requires: pip install -e . in this repo and a local .venv with JAX/CUDA.
+# Also works from HyperscaleES_v2_rwkv_qwen (RWKV + Qwen3.5).
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_PYTHON="${VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"
+VENV_PYTHON="${VENV_PYTHON:-/home/siana/HyperscaleES_v2_308c579/.venv/bin/python}"
+export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$REPO_ROOT"
 

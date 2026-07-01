@@ -303,3 +303,412 @@ class FastRWKV(BaseRWKV):
             # state[i] = state_i
 
         return x, state
+
+
+class Qwen35RMSNorm(Model):
+    @classmethod
+    def _forward(cls, common_params, x, eps=1e-6):
+        variance = jnp.mean(x**2, axis=-1, keepdims=True)
+        x = x * jax.lax.rsqrt(variance + eps)
+        return x * (1.0 + call_submodule(Parameter, "weight", common_params))
+
+
+class Qwen35RMSNormGated(Model):
+    @classmethod
+    def _forward(cls, common_params, x, gate, eps=1e-6):
+        variance = jnp.mean(x**2, axis=-1, keepdims=True)
+        x = x * jax.lax.rsqrt(variance + eps)
+        # HF Qwen3.5 gated RMSNorm uses direct multiplicative weight (no +1 offset).
+        x = x * call_submodule(Parameter, "weight", common_params)
+        return x * jax.nn.silu(gate)
+
+
+class Qwen35MLP(Model):
+    @classmethod
+    def _forward(cls, common_params, x):
+        gate = jax.nn.silu(call_submodule(Linear, "gate_proj", common_params, x))
+        up = call_submodule(Linear, "up_proj", common_params, x)
+        return call_submodule(Linear, "down_proj", common_params, gate * up)
+
+
+class Qwen35LinearAttention(Model):
+    @classmethod
+    def _forward(cls, common_params, x, conv_state, recurrent_state):
+        cfg = common_params.frozen_params
+
+        key_dim = cfg["linear_key_head_dim"] * cfg["linear_num_key_heads"]
+        value_dim = cfg["linear_value_head_dim"] * cfg["linear_num_value_heads"]
+        head_k_dim = cfg["linear_key_head_dim"]
+        head_v_dim = cfg["linear_value_head_dim"]
+        num_v_heads = cfg["linear_num_value_heads"]
+
+        mixed_qkv = call_submodule(Linear, "in_proj_qkv", common_params, x)  # [1, conv_dim]
+        mixed_qkv = mixed_qkv[0]  # [conv_dim]
+
+        # Single-token causal depthwise conv update.
+        conv_common = common_params._replace(
+            params=common_params.params["conv1d"],
+            es_tree_key=common_params.es_tree_key["conv1d"],
+            frozen_params=None,
+        )
+        conv_w = call_submodule(Parameter, "weight", conv_common)
+        conv_w = conv_w[:, 0, :]  # [conv_dim, kernel]
+        conv_window = jnp.concatenate([conv_state, mixed_qkv[:, None]], axis=-1)  # [conv_dim, kernel]
+        mixed_qkv = jnp.sum(conv_window * conv_w, axis=-1)
+        mixed_qkv = jax.nn.silu(mixed_qkv)
+        new_conv_state = conv_window[:, 1:]
+
+        query = mixed_qkv[:key_dim].reshape(num_v_heads, head_k_dim)
+        key = mixed_qkv[key_dim : (2 * key_dim)].reshape(num_v_heads, head_k_dim)
+        value = mixed_qkv[(2 * key_dim) :].reshape(num_v_heads, head_v_dim)
+
+        # Match HF fallback kernel: L2-normalize q/k before recurrent update.
+        def l2norm(v, eps=1e-6):
+            inv = jax.lax.rsqrt(jnp.sum(v * v, axis=-1, keepdims=True) + eps)
+            return v * inv
+        query = l2norm(query)
+        key = l2norm(key)
+
+        z = call_submodule(Linear, "in_proj_z", common_params, x).reshape(num_v_heads, head_v_dim)
+        beta = jax.nn.sigmoid(call_submodule(Linear, "in_proj_b", common_params, x)).reshape(num_v_heads)
+        a = call_submodule(Linear, "in_proj_a", common_params, x).reshape(num_v_heads)
+
+        A_log = call_submodule(Parameter, "A_log", common_params).reshape(num_v_heads)
+        dt_bias = call_submodule(Parameter, "dt_bias", common_params).reshape(num_v_heads)
+        g = -jnp.exp(A_log.astype(jnp.float32)) * jax.nn.softplus((a + dt_bias).astype(jnp.float32))
+
+        scale = 1.0 / jnp.sqrt(head_k_dim)
+
+        def per_head_step(s, q, k, v, beta_h, g_h):
+            s = s * jnp.exp(g_h).astype(s.dtype)
+            kv_mem = jnp.sum(s * k[:, None], axis=0)
+            delta = (v - kv_mem) * beta_h
+            s = s + k[:, None] * delta[None, :]
+            out = jnp.sum(s * (q * scale)[:, None], axis=0)
+            return s, out
+
+        new_recurrent_state, core = jax.vmap(per_head_step)(
+            recurrent_state, query, key, value, beta, g.astype(recurrent_state.dtype)
+        )
+
+        core = call_submodule(Qwen35RMSNormGated, "norm", common_params, core, z)
+        core = core.reshape(1, value_dim)
+        out = call_submodule(Linear, "out_proj", common_params, core)
+        return out, new_conv_state, new_recurrent_state
+
+
+class Qwen35SelfAttention(Model):
+    @classmethod
+    def _rotate_half(cls, x):
+        half = x.shape[-1] // 2
+        return jnp.concatenate([-x[..., half:], x[..., :half]], axis=-1)
+
+    @classmethod
+    def _forward(cls, common_params, x, rope_cos, rope_sin, k_cache, v_cache, pos):
+        cfg = common_params.frozen_params
+        head_dim = cfg["head_dim"]
+        num_heads = cfg["num_attention_heads"]
+        num_kv = cfg["num_key_value_heads"]
+        num_groups = num_heads // num_kv
+
+        q_proj = call_submodule(Linear, "q_proj", common_params, x).reshape(1, num_heads, head_dim * 2)
+        query, gate = jnp.split(q_proj, 2, axis=-1)
+        query = call_submodule(Qwen35RMSNorm, "q_norm", common_params, query)
+
+        key = call_submodule(Linear, "k_proj", common_params, x).reshape(1, num_kv, head_dim)
+        key = call_submodule(Qwen35RMSNorm, "k_norm", common_params, key)
+        value = call_submodule(Linear, "v_proj", common_params, x).reshape(1, num_kv, head_dim)
+
+        rotary_dim = rope_cos.shape[-1]
+        q_rot, q_pass = query[..., :rotary_dim], query[..., rotary_dim:]
+        k_rot, k_pass = key[..., :rotary_dim], key[..., rotary_dim:]
+        q_rot_half = cls._rotate_half(q_rot)
+        k_rot_half = cls._rotate_half(k_rot)
+        query = jnp.concatenate([q_rot * rope_cos + q_rot_half * rope_sin, q_pass], axis=-1)
+        key = jnp.concatenate([k_rot * rope_cos + k_rot_half * rope_sin, k_pass], axis=-1)
+        new_k_cache = k_cache.at[pos].set(key[0])
+        new_v_cache = v_cache.at[pos].set(value[0])
+
+        keys = jnp.repeat(new_k_cache, num_groups, axis=1)  # [cache_len, num_heads, head_dim]
+        values = jnp.repeat(new_v_cache, num_groups, axis=1)
+
+        q = query[0]  # [num_heads, head_dim]
+        logits = jnp.einsum("hd,shd->hs", q, keys) / jnp.sqrt(head_dim)
+        cache_len = k_cache.shape[0]
+        valid_mask = jnp.arange(cache_len) <= pos
+        logits = jnp.where(valid_mask[None, :], logits, -1e30)
+        weights = jax.nn.softmax(logits, axis=-1)
+        attn = jnp.einsum("hs,shd->hd", weights, values)[None, ...]
+        attn = attn.reshape(1, num_heads * head_dim)
+        attn = attn * jax.nn.sigmoid(gate.reshape(1, num_heads * head_dim))
+        out = call_submodule(Linear, "o_proj", common_params, attn)
+        return out, new_k_cache, new_v_cache
+
+
+class Qwen35RWKV(LLM):
+    @classmethod
+    def transform_torch_model(cls, torch_model, dtype=jnp.bfloat16):
+        import torch
+
+        w = torch_model
+        if isinstance(w, torch.nn.Module):
+            w = w.state_dict()
+
+        transformed = {}
+        for k, v in w.items():
+            if k.startswith("model.language_model.layers."):
+                new_k = k.replace("model.language_model.layers.", "blocks.")
+                transformed[new_k] = v
+            elif k.startswith("model.layers."):
+                transformed[k.replace("model.layers.", "blocks.")] = v
+            elif k.startswith("model.language_model.embed_tokens."):
+                transformed[k.replace("model.language_model.", "")] = v
+            elif k.startswith("model.embed_tokens."):
+                transformed[k.replace("model.", "")] = v
+            elif k.startswith("model.language_model.norm."):
+                transformed[k.replace("model.language_model.", "")] = v
+            elif k.startswith("model.norm."):
+                transformed[k.replace("model.", "")] = v
+            elif k.startswith("lm_head."):
+                transformed[k] = v
+        return transformed
+
+    @classmethod
+    def transform_config(cls, config):
+        if config is None:
+            return {}
+        cfg = dict(config)
+        cfg["linear_layer_indices"] = [i for i, t in enumerate(cfg["layer_types"]) if t == "linear_attention"]
+        cfg["full_layer_indices"] = [i for i, t in enumerate(cfg["layer_types"]) if t == "full_attention"]
+        rope_params = cfg.get("rope_parameters", {})
+        cfg["rope_theta"] = rope_params.get("rope_theta", 10000000.0)
+        cfg["partial_rotary_factor"] = rope_params.get("partial_rotary_factor", 0.25)
+        cfg["rms_norm_eps"] = cfg.get("rms_norm_eps", 1e-6)
+        cfg["attn_cache_len"] = min(4096, int(cfg.get("max_position_embeddings", 4096)))
+        return cfg
+
+    @classmethod
+    def get_scan_map(cls, config):
+        BS = (0,)
+        NS = tuple()
+        return {
+            "blocks": {
+                "input_layernorm": {"weight": BS},
+                "post_attention_layernorm": {"weight": BS},
+                "mlp": {
+                    "down_proj": {"weight": BS},
+                    "gate_proj": {"weight": BS},
+                    "up_proj": {"weight": BS},
+                },
+                "linear_attn": {
+                    "A_log": BS,
+                    "dt_bias": BS,
+                    "conv1d": {"weight": BS},
+                    "in_proj_a": {"weight": BS},
+                    "in_proj_b": {"weight": BS},
+                    "in_proj_qkv": {"weight": BS},
+                    "in_proj_z": {"weight": BS},
+                    "norm": {"weight": BS},
+                    "out_proj": {"weight": BS},
+                },
+                "self_attn": {
+                    "k_norm": {"weight": BS},
+                    "k_proj": {"weight": BS},
+                    "o_proj": {"weight": BS},
+                    "q_norm": {"weight": BS},
+                    "q_proj": {"weight": BS},
+                    "v_proj": {"weight": BS},
+                },
+            },
+            "embed_tokens": {"weight": NS},
+            "lm_head": {"weight": NS},
+            "norm": {"weight": NS},
+        }
+
+    @classmethod
+    def get_es_map(cls, config):
+        LORA = MM_PARAM
+        FULL = PARAM
+        return {
+            "blocks": {
+                "input_layernorm": {"weight": FULL},
+                "post_attention_layernorm": {"weight": FULL},
+                "mlp": {
+                    "down_proj": {"weight": LORA},
+                    "gate_proj": {"weight": LORA},
+                    "up_proj": {"weight": LORA},
+                },
+                "linear_attn": {
+                    "A_log": FULL,
+                    "dt_bias": FULL,
+                    "conv1d": {"weight": FULL},
+                    "in_proj_a": {"weight": LORA},
+                    "in_proj_b": {"weight": LORA},
+                    "in_proj_qkv": {"weight": LORA},
+                    "in_proj_z": {"weight": LORA},
+                    "norm": {"weight": FULL},
+                    "out_proj": {"weight": LORA},
+                },
+                "self_attn": {
+                    "k_norm": {"weight": FULL},
+                    "k_proj": {"weight": LORA},
+                    "o_proj": {"weight": LORA},
+                    "q_norm": {"weight": FULL},
+                    "q_proj": {"weight": LORA},
+                    "v_proj": {"weight": LORA},
+                },
+            },
+            "embed_tokens": {"weight": EXCLUDED},
+            "lm_head": {"weight": EXCLUDED},
+            "norm": {"weight": FULL},
+        }
+
+    @classmethod
+    def default_state(cls, params, config):
+        n_linear = len(config["linear_layer_indices"])
+        n_full = len(config["full_layer_indices"])
+        num_v_heads = config["linear_num_value_heads"]
+        head_k_dim = config["linear_key_head_dim"]
+        head_v_dim = config["linear_value_head_dim"]
+        num_kv_heads = config["num_key_value_heads"]
+        full_head_dim = config["head_dim"]
+        conv_dim = (config["linear_key_head_dim"] * config["linear_num_key_heads"] * 2) + (
+            config["linear_value_head_dim"] * config["linear_num_value_heads"]
+        )
+        kernel = config["linear_conv_kernel_dim"]
+        cache_len = int(config.get("attn_cache_len", 4096))
+        dtype = params["embed_tokens"]["weight"].dtype
+        return {
+            "linear_conv": jnp.zeros((n_linear, conv_dim, kernel - 1), dtype=dtype),
+            "linear_recurrent": jnp.zeros(
+                (n_linear, num_v_heads, head_k_dim, head_v_dim), dtype=dtype
+            ),
+            "full_k_cache": jnp.zeros((n_full, cache_len, num_kv_heads, full_head_dim), dtype=dtype),
+            "full_v_cache": jnp.zeros((n_full, cache_len, num_kv_heads, full_head_dim), dtype=dtype),
+            "position": jnp.array(0, dtype=jnp.int32),
+        }
+
+    @classmethod
+    def embed(cls, common_params, tokens):
+        return common_params.params["embed_tokens"]["weight"][tokens.ravel()]
+
+    @classmethod
+    def outhead(cls, common_params, x):
+        x = call_submodule(Qwen35RMSNorm, "norm", common_params, x, common_params.frozen_params["rms_norm_eps"])
+        return x @ common_params.params["lm_head"]["weight"].T
+
+    @classmethod
+    def _rope_cos_sin(cls, common_params, position):
+        cfg = common_params.frozen_params
+        head_dim = cfg["head_dim"]
+        rotary_dim = int(head_dim * cfg["partial_rotary_factor"])
+        rotary_dim = rotary_dim - (rotary_dim % 2)
+        inv_freq = 1.0 / (
+            cfg["rope_theta"] ** (jnp.arange(0, rotary_dim, 2, dtype=jnp.float32) / max(1, rotary_dim))
+        )
+        freqs = position.astype(jnp.float32) * inv_freq
+        emb = jnp.concatenate([freqs, freqs], axis=-1)
+        return jnp.cos(emb), jnp.sin(emb)
+
+    @classmethod
+    def forward_seq(cls, common_params, x, state, length, new_starts):
+        cfg = common_params.frozen_params
+        linear_indices = cfg["linear_layer_indices"]
+        full_indices = cfg["full_layer_indices"]
+        eps = cfg["rms_norm_eps"]
+
+        layer_types = cfg["layer_types"]
+        n_layers = len(layer_types)
+
+        linear_layer_to_idx = {layer: i for i, layer in enumerate(linear_indices)}
+        full_layer_to_idx = {layer: i for i, layer in enumerate(full_indices)}
+
+        def token_step(carry, token_pack):
+            curr_state = carry
+            token, restart = token_pack
+            pos = curr_state["position"]
+            x_t = token[None, :]
+
+            def _reset_state(s):
+                return s | {
+                    "linear_conv": jnp.zeros_like(s["linear_conv"]),
+                    "linear_recurrent": jnp.zeros_like(s["linear_recurrent"]),
+                    "full_k_cache": jnp.zeros_like(s["full_k_cache"]),
+                    "full_v_cache": jnp.zeros_like(s["full_v_cache"]),
+                    "position": jnp.array(0, dtype=jnp.int32),
+                }
+
+            curr_state = jax.lax.cond(restart, _reset_state, lambda s: s, curr_state)
+            pos = curr_state["position"]
+
+            rope_cos, rope_sin = cls._rope_cos_sin(common_params, pos)
+
+            for layer in range(n_layers):
+                block_params = jax.tree.map(lambda a: a[layer], common_params.params["blocks"])
+                block_keys = jax.tree.map(lambda a: a[layer], common_params.es_tree_key["blocks"])
+                block_frozen = {**cfg, "current_layer": layer}
+                block_common = common_params._replace(
+                    params=block_params,
+                    es_tree_key=block_keys,
+                    frozen_params=block_frozen,
+                )
+
+                residual = x_t
+                x_t = call_submodule(Qwen35RMSNorm, "input_layernorm", block_common, x_t, eps)
+
+                if layer_types[layer] == "linear_attention":
+                    lidx = linear_layer_to_idx[layer]
+                    lin_params = jax.tree.map(lambda a: a[lidx], common_params.params["blocks"]["linear_attn"])
+                    lin_keys = jax.tree.map(lambda a: a[lidx], common_params.es_tree_key["blocks"]["linear_attn"])
+                    lin_common = common_params._replace(
+                        params=lin_params,
+                        es_tree_key=lin_keys,
+                        frozen_params={**cfg, "current_layer": layer},
+                    )
+                    out, conv_s, rec_s = Qwen35LinearAttention._forward(
+                        lin_common,
+                        x_t,
+                        curr_state["linear_conv"][lidx],
+                        curr_state["linear_recurrent"][lidx],
+                    )
+                    curr_state = curr_state | {
+                        "linear_conv": curr_state["linear_conv"].at[lidx].set(conv_s),
+                        "linear_recurrent": curr_state["linear_recurrent"].at[lidx].set(rec_s),
+                    }
+                    x_t = out
+                else:
+                    fidx = full_layer_to_idx[layer]
+                    attn_params = jax.tree.map(lambda a: a[fidx], common_params.params["blocks"]["self_attn"])
+                    attn_keys = jax.tree.map(lambda a: a[fidx], common_params.es_tree_key["blocks"]["self_attn"])
+                    attn_common = common_params._replace(
+                        params=attn_params,
+                        es_tree_key=attn_keys,
+                        frozen_params={**cfg, "current_layer": layer},
+                    )
+                    cache_len = curr_state["full_k_cache"].shape[1]
+                    pos_clip = jnp.minimum(pos, cache_len - 1)
+                    x_t, k_new, v_new = Qwen35SelfAttention._forward(
+                        attn_common,
+                        x_t,
+                        rope_cos,
+                        rope_sin,
+                        curr_state["full_k_cache"][fidx],
+                        curr_state["full_v_cache"][fidx],
+                        pos_clip,
+                    )
+                    curr_state = curr_state | {
+                        "full_k_cache": curr_state["full_k_cache"].at[fidx].set(k_new),
+                        "full_v_cache": curr_state["full_v_cache"].at[fidx].set(v_new),
+                    }
+
+                x_t = residual + x_t
+                residual = x_t
+                x_t = call_submodule(Qwen35RMSNorm, "post_attention_layernorm", block_common, x_t, eps)
+                x_t = call_submodule(Qwen35MLP, "mlp", block_common, x_t)
+                x_t = residual + x_t
+
+            curr_state = curr_state | {"position": curr_state["position"] + 1}
+            return curr_state, x_t[0]
+
+        final_state, y = jax.lax.scan(token_step, state, (x, new_starts))
+        return y, final_state

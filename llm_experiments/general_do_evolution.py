@@ -97,6 +97,11 @@ args = tyro.cli(Args)
 profile = os.getenv("PROFILE", "default")
 CONFIG_DIR = (Path(__file__).resolve().parents[1] / "configs").as_posix()
 
+if args.model_choice.startswith("q35_") and args.rwkv_type == "BaseRWKV":
+    args.rwkv_type = "Qwen35RWKV"
+
+suppress_eos_token = 0 if args.model_choice[0] == "7" else None
+
 if profile !=  "default":
     with initialize_config_dir(version_base=None, config_dir=CONFIG_DIR):
         user_cfg = compose(config_name=profile) 
@@ -195,6 +200,7 @@ _generate_thread = build_generate_thread(
     base_gen_key,
     args.temperature,
     for_shard_map=USE_SHARD_MAP,
+    suppress_eos_token=suppress_eos_token,
 )
 
 print("Compiling generate batch")
@@ -230,7 +236,7 @@ print("Compile time", time.time() - start_time)
 print("memory info")
 print(generate_batch.memory_analysis())
 
-validate = build_validate(RWKV, config, params, base_evo_keys, base_valid_key, tokenizer, legacy_tokenizer, args, args.temperature)
+validate = build_validate(RWKV, config, params, base_evo_keys, base_valid_key, tokenizer, legacy_tokenizer, args, args.temperature, suppress_eos_token=suppress_eos_token)
 
 def _do_update(noiser_params, params, raw_scores, epoch_num):
     iterinfos = (jnp.full_like(raw_scores, epoch_num, dtype=jnp.int32), global_indices)

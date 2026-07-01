@@ -28,15 +28,15 @@ def safe_decode(tokens, tokenizer):
     except BaseException as e:
         return ""
 
-def build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature=1.0, for_shard_map=False):
+def build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature=1.0, for_shard_map=False, suppress_eos_token=0):
 
     def forward_and_sample(noiser_params, params, input_token, input_state, generation_key, iterinfo):
         print("compiling forward and sample")
         gen_key, _gen_key = jax.random.split(generation_key)
         generated_outs, generated_state = MODEL.forward(NOISER, frozen_noiser_params, noiser_params, config, params, base_evo_keys, iterinfo, input_token, input_state)
         logits = generated_outs[-1]
-        # Avoid sampling EOS (token 0) to prevent empty continuations.
-        logits = logits.at[0].set(-jnp.inf)
+        if suppress_eos_token is not None:
+            logits = logits.at[suppress_eos_token].set(-jnp.inf)
         if temperature != 0.0:
             sampled_tok = jax.random.categorical(_gen_key, logits / temperature)
         else:
@@ -105,7 +105,7 @@ def build_generate_sft_thread(MODEL, NOISER, frozen_noiser_params, config, base_
     return generate_thread
 
 
-def build_validate(MODEL, config, params_example, base_evo_keys, master_gen_key, tokenizer, legacy_tokenizer, args, temperature=1.0, use_validation_set=True, NOISER=hs.noiser.base_noiser.Noiser, sigma=0.0):
+def build_validate(MODEL, config, params_example, base_evo_keys, master_gen_key, tokenizer, legacy_tokenizer, args, temperature=1.0, use_validation_set=True, NOISER=hs.noiser.base_noiser.Noiser, sigma=0.0, suppress_eos_token=0):
     frozen_noiser_params, noiser_params = NOISER.init_noiser(params_example, sigma, 0.0)
 
     if use_validation_set:
@@ -113,7 +113,7 @@ def build_validate(MODEL, config, params_example, base_evo_keys, master_gen_key,
     else:
         validation_task = all_tasks[args.task](tokenizer, legacy_tokenizer, args.generation_length)
 
-    _generate_thread = build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature)
+    _generate_thread = build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature, suppress_eos_token=suppress_eos_token)
 
     print("Compiling generate validation batch")
     start_time = time.time()

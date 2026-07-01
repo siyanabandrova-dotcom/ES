@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import reasoning_gym
 
+from pathlib import Path
 from datasets import load_dataset
 from functools import lru_cache
 from math_verify import parse as mv_parse, verify as mv_verify
@@ -48,6 +49,14 @@ def safe_decode(tokens, tokenizer):
         if stop_tokens.size > 0:
             tokens = tokens[:stop_tokens[0]]
         return tokenizer.decode(tokens)
+    except BaseException:
+        return ""
+
+
+def decode_tokens(tokens, tokenizer):
+    """Decode a token sequence without RWKV-specific EOS truncation."""
+    try:
+        return tokenizer.decode(np.asarray(tokens, dtype=np.int32).tolist())
     except BaseException:
         return ""
 
@@ -504,6 +513,115 @@ class CountdownNValRG(ReasoningGymTrain):
         )
 
 
+_COUNTDOWN_JSON_PATH = Path(__file__).resolve().parents[3] / "data" / "countdown.json"
+
+
+def _load_countdown_json_dataset(seed: int, dataset_size: int | None = None):
+    ds = load_dataset("json", data_files=str(_COUNTDOWN_JSON_PATH), split="train")
+    ds = ds.shuffle(seed=seed)
+    if dataset_size is not None:
+        ds = ds.select(range(min(dataset_size, len(ds))))
+    return ds
+
+
+def _countdown_chat_format_reward(response: str) -> float:
+    think_regex = r"<think>.*?<\/think>"
+    answer_regex = r"<answer>.*?<\/answer>"
+    full_format_regex = r"^<think>.*?<\/think>\n<answer>.*?<\/answer>$"
+
+    think_match = re.search(think_regex, response, re.DOTALL)
+    answer_match = re.search(answer_regex, response, re.DOTALL)
+    full_format_match = re.match(full_format_regex, response, re.DOTALL)
+
+    if full_format_match:
+        return 1.0
+    reward = 0.0
+    if think_match:
+        reward += 0.1
+    if answer_match:
+        reward += 0.5
+    return reward
+
+
+def _countdown_chat_answer_reward(response: str, numbers, target) -> float:
+    answer_regex = r"<answer>(.*?)<\/answer>"
+    all_matches = re.findall(answer_regex, response, re.DOTALL)
+    if not all_matches:
+        return 0.0
+
+    answer_content = all_matches[-1].strip()
+    allowed_chars = r"^[0-9+\-*/() ]+$"
+    if not answer_content or not re.match(allowed_chars, answer_content):
+        return 0.0
+
+    used_numbers = [int(n) for n in re.findall(r"\d+", answer_content)]
+    if sorted(used_numbers) != sorted(numbers):
+        return 0.0
+
+    try:
+        result = eval(answer_content, {"__builtins__": None}, {})
+        if abs(float(result) - float(target)) < 1e-5:
+            return 1.0
+    except Exception:
+        return 0.0
+    return 0.0
+
+
+def _countdown_chat_score(response: str, numbers, target) -> float:
+    format_reward = _countdown_chat_format_reward(response)
+    answer_reward = _countdown_chat_answer_reward(response, numbers, target)
+    return format_reward * 0.1 + answer_reward
+
+
+def _countdown_chat_score_generation(generation: str, numbers, target) -> float:
+    """Score only the model continuation (prompt already ends with <think>)."""
+    format_reward = _countdown_chat_format_reward("<think>" + generation)
+    answer_reward = _countdown_chat_answer_reward(generation, numbers, target)
+    return format_reward * 0.1 + answer_reward
+
+
+class CountdownChatTrain(BanditTask):
+    """Countdown with eggroll-vllm chat/XML prompt format (countdown.json)."""
+
+    def __init__(self, encoding_tokenizer, decoding_tokenizer, max_num_steps,
+                 dataset_size=256, seed=42):
+        super().__init__(encoding_tokenizer, decoding_tokenizer, max_num_steps)
+        self.dataset = _load_countdown_json_dataset(seed=seed, dataset_size=dataset_size)
+        self.dataset_size = len(self.dataset)
+
+    def __len__(self):
+        return self.dataset_size
+
+    def get_input(self, indices):
+        return jnp.array([
+            get_padded_prompt(
+                self.encoding_tokenizer.encode(self.dataset[i.item() % len(self.dataset)]["context"]),
+                self.max_num_steps,
+            )
+            for i in indices
+        ])
+
+    def get_batch_fitness(self, indices, full_generations):
+        np_full = np.array(full_generations)
+        rewards = []
+        for idx, tok_seq in zip(indices, np_full):
+            example = self.dataset[idx.item() % len(self.dataset)]
+            numbers = example["numbers"]
+            target = example["target"]
+            context = example["context"]
+            prompt_len = len(self.encoding_tokenizer.encode(context))
+            generation = decode_tokens(tok_seq[prompt_len:], self.decoding_tokenizer)
+            rewards.append(_countdown_chat_score_generation(generation, numbers, target))
+        return jnp.array(rewards, dtype=jnp.float32)
+
+
+class CountdownChatVal(CountdownChatTrain):
+    def __init__(self, encoding_tokenizer, decoding_tokenizer, max_num_steps,
+                 dataset_size=256, seed=1337):
+        super().__init__(encoding_tokenizer, decoding_tokenizer, max_num_steps,
+                         dataset_size=dataset_size, seed=seed)
+
+
 # ----------------------------
 # Dynamic RG class builders
 # ----------------------------
@@ -564,6 +682,7 @@ all_tasks = {
     "gsm8k": GSM8KTrain,
     "gsm8ksft": GSM8KSFT,
     "countdownn": CountdownNTrainRG,
+    "countdown_chat": CountdownChatTrain,
     "aime24": AIMETrainAIME,
     "aime25": AIMETrainAIME,
 }
@@ -576,6 +695,7 @@ validation_tasks = {
     "gsm8k": GSM8KTest,
     "gsm8ksft": GSM8KTest,
     "countdownn": CountdownNValRG,
+    "countdown_chat": CountdownChatVal,
     "aime24": AIME24Test,
     "aime25": AIME25Test,
 }

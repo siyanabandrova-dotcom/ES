@@ -1,4 +1,4 @@
-from .tokenizer import GptTokenizer, WorldTokenizer, QwenTokenizer
+from .tokenizer import GptTokenizer, WorldTokenizer, QwenTokenizer, Qwen35Tokenizer, Qwen25InstructTokenizer
 
 # from . import rwkv4, rwkv5, rwkv5_2, rwkv6, rwkv7
 from . import rwkv7, qrwkv6
@@ -6,7 +6,7 @@ from . import rwkv7, qrwkv6
 from huggingface_hub.constants import HF_HOME
 from huggingface_hub import hf_hub_download
 
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoConfig
 
 from pathlib import Path
 
@@ -60,6 +60,31 @@ models = {
     "7g2.9B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1g-2.9b-20260526-ctx8192.pth")), None),
     "7g7B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1g-7.2b-20260523-ctx8192.pth")), None),
     "7g14B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1g-13.3b-20260523-ctx8192.pth")), None),
+
+    "q35_2B": (
+        qrwkv6,
+        Qwen35Tokenizer,
+        (
+            lambda: AutoModelForCausalLM.from_pretrained(
+                "Qwen/Qwen3.5-2B",
+                trust_remote_code=True,
+                torch_dtype="auto",
+            )
+        ),
+        (lambda: AutoConfig.from_pretrained("Qwen/Qwen3.5-2B", trust_remote_code=True).text_config.to_dict()),
+    ),
+    "q35_0p8B": (
+        qrwkv6,
+        Qwen35Tokenizer,
+        (
+            lambda: AutoModelForCausalLM.from_pretrained(
+                "Qwen/Qwen3.5-0.8B",
+                trust_remote_code=True,
+                torch_dtype="auto",
+            )
+        ),
+        (lambda: AutoConfig.from_pretrained("Qwen/Qwen3.5-0.8B", trust_remote_code=True).text_config.to_dict()),
+    ),
 
     # "6q7B": (qrwkv6, QwenTokenizer, (lambda : AutoModelForCausalLM.from_pretrained("recursal/QRWKV6-7B-Base", trust_remote_code=True, dtype="auto")), (lambda: {"head_size": 128})),
     # "6q32B": (qrwkv6, QwenTokenizer, (lambda : AutoModelForCausalLM.from_pretrained("featherless-ai/QRWKV-QwQ-32B", trust_remote_code=True, dtype="auto")), (lambda: {"head_size": 128})),

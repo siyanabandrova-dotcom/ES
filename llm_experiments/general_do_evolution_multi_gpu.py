@@ -114,6 +114,12 @@ if profile != "default":
             setattr(defaults, k, v)
 
 args = tyro.cli(Args, default=defaults)
+
+if args.model_choice.startswith("q35_") and args.rwkv_type == "BaseRWKV":
+    args.rwkv_type = "Qwen35RWKV"
+
+suppress_eos_token = 0 if args.model_choice[0] == "7" else None
+
 print()
 print(f"Using config: {profile}")
 print()
@@ -210,7 +216,7 @@ else:
     all_thread_idxes = global_indices
     all_thread_val_idxes = global_val_indices
 
-_generate_thread = build_generate_thread(RWKV, NOISER, frozen_noiser_params, config, base_evo_keys, base_gen_key, args.temperature)
+_generate_thread = build_generate_thread(RWKV, NOISER, frozen_noiser_params, config, base_evo_keys, base_gen_key, args.temperature, suppress_eos_token=suppress_eos_token)
 
 print("Compiling generate batch")
 start_time = time.time()
@@ -235,7 +241,7 @@ print(generate_batch.memory_analysis())
 
 # validate = build_validate(RWKV, config, params, base_evo_keys, base_valid_key, tokenizer, legacy_tokenizer, args, args.temperature)
 _generate_thread_val = build_generate_thread(
-    RWKV, NOISER, frozen_noiser_params, config, base_evo_keys, base_valid_key, args.val_temperature
+    RWKV, NOISER, frozen_noiser_params, config, base_evo_keys, base_valid_key, args.val_temperature, suppress_eos_token=suppress_eos_token
 )
 print("Compiling generate validation batch")
 start_time = time.time()

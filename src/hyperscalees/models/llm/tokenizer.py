@@ -143,3 +143,48 @@ class QwenTokenizer(BaseTokenizer):
 
     def decode(self, tokens):
         return self.tok.decode(tokens)
+
+    def pad_token_id(self):
+        if self.tok.pad_token_id is not None:
+            return int(self.tok.pad_token_id)
+        if self.tok.eos_token_id is not None:
+            return int(self.tok.eos_token_id)
+        return 0
+
+
+class Qwen35Tokenizer(BaseTokenizer):
+
+    def __init__(self):
+        self.tok = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-2B", trust_remote_code=True)
+
+    def encode(self, src):
+        return self.tok.encode(src)
+
+    def decode(self, tokens):
+        return self.tok.decode(tokens)
+
+    def pad_token_id(self):
+        if self.tok.pad_token_id is not None:
+            return int(self.tok.pad_token_id)
+        if self.tok.eos_token_id is not None:
+            return int(self.tok.eos_token_id)
+        return 0
+
+
+class Qwen25InstructTokenizer(BaseTokenizer):
+
+    def __init__(self):
+        self.tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct", trust_remote_code=True)
+
+    def encode(self, src):
+        return self.tok.encode(src)
+
+    def decode(self, tokens):
+        return self.tok.decode(tokens)
+
+    def pad_token_id(self):
+        if self.tok.pad_token_id is not None:
+            return int(self.tok.pad_token_id)
+        if self.tok.eos_token_id is not None:
+            return int(self.tok.eos_token_id)
+        return 0
